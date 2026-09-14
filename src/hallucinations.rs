@@ -15,8 +15,8 @@
 //!
 //! Файлы скриммеров опциональны: наличие проверяется при **каждом**
 //! срабатывании, поэтому файлы, положенные в `assets/` при запущенной игре,
-//! подхватятся автоматически. Если PNG нет — мигает красно-чёрная заглушка,
-//! если MP3 нет — скример проходит без звука.
+//! подхватятся автоматически. Если PNG нет - мигает красно-чёрная заглушка,
+//! если MP3 нет - скример проходит без звука.
 
 use bevy::audio::Volume;
 use bevy::prelude::*;
@@ -64,7 +64,7 @@ const STAMINA_AFTER_SCREAMER: f32 = 30.0;
 // Компоненты и ресурсы
 // ---------------------------------------------------------------------------
 
-/// Скрытый параметр безумия 0..100. Числа игрок не видит — только эффекты:
+/// Скрытый параметр безумия 0..100. Числа игрок не видит - только эффекты:
 /// виньетку, мерцание фонарика и, в конце концов, скример.
 #[derive(Component)]
 pub struct Insanity(pub f32);
@@ -210,9 +210,9 @@ fn fire_screamer(
             StateScoped(AppState::InGame),
         ));
     } else {
-        // PNG нет — игра продолжается, мигает красно-чёрная заглушка.
+        // PNG нет - игра продолжается, мигает красно-чёрная заглушка.
         // Как только файл появится в assets/, будет использоваться он.
-        warn!("{image_path} not found — using fallback flash (drop the file into assets/ to enable the real screamer)");
+        warn!("{image_path} not found - using fallback flash (drop the file into assets/ to enable the real screamer)");
         commands.spawn((
             fullscreen,
             BackgroundColor(Color::srgb(0.6, 0.0, 0.0)),
@@ -231,7 +231,7 @@ fn fire_screamer(
             StateScoped(AppState::InGame),
         ));
     } else {
-        warn!("{sound_path} not found — screamer without sound (drop the file into assets/ to enable it)");
+        warn!("{sound_path} not found - screamer without sound (drop the file into assets/ to enable it)");
     }
 
     // --- Запуск таймера ровно на 1 секунду ---
@@ -240,8 +240,8 @@ fn fire_screamer(
     info!("SCREAMER! (pair #{})", index + 1);
 }
 
-/// Тиканье активного скримера: мигание заглушки, тряска камеры и —
-/// ровно через секунду — удаление картинки и возврат в игру.
+/// Тиканье активного скримера: мигание заглушки, тряска камеры и -
+/// ровно через секунду - удаление картинки и возврат в игру.
 fn tick_screamer(
     time: Res<Time>,
     mut commands: Commands,
@@ -286,6 +286,6 @@ fn tick_screamer(
         }
         state.active = false;
         state.cooldown = TRIGGER_COOLDOWN_SECS;
-        info!("Screamer over — back to the dark.");
+        info!("Screamer over - back to the dark.");
     }
 }

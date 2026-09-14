@@ -1,12 +1,12 @@
-//! «Эхо Забытых Стен» — психологический хоррор от первого лица.
+//! «Эхо Забытых Стен» - психологический хоррор от первого лица.
 //!
 //! Точка входа: окно, глобальные состояния [`AppState`], подключение плагинов,
 //! главное меню, процедурный уровень-лабиринт, HUD и экран победы.
 //!
 //! Архитектура (ECS, по модулям):
-//! - [`player`] — игрок: движение, стамина, принудительный бег, фонарик, HUD;
-//! - [`audio`] — звукорежиссёр: музыка меню и циклический амбиент;
-//! - [`hallucinations`] — безумие и скримеры (PNG на весь экран + MP3).
+//! - [`player`] - игрок: движение, стамина, принудительный бег, фонарик, HUD;
+//! - [`audio`] - звукорежиссёр: музыка меню и циклический амбиент;
+//! - [`hallucinations`] - безумие и скримеры (PNG на весь экран + MP3).
 
 mod audio;
 mod hallucinations;
@@ -32,7 +32,7 @@ use rand::Rng;
 pub const CELL: f32 = 4.0;
 /// Высота стен лабиринта.
 pub const WALL_H: f32 = 3.2;
-/// Размер лабиринта в клетках (только НЕЧЁТНЫЕ числа — требование генератора).
+/// Размер лабиринта в клетках (только НЕЧЁТНЫЕ числа - требование генератора).
 const MAZE_W: usize = 21;
 const MAZE_H: usize = 15;
 /// Сколько фрагментов эха нужно собрать для победы.
@@ -90,7 +90,7 @@ impl Default for GameProgress {
     }
 }
 
-/// Светящийся фрагмент эха — цель забега (5 штук в дальних углах лабиринта).
+/// Светящийся фрагмент эха - цель забега (5 штук в дальних углах лабиринта).
 #[derive(Component)]
 struct EchoFragment;
 
@@ -161,8 +161,8 @@ pub fn game_input_allowed(
 /// Едва заметный холодный свет, чтобы тьма не была абсолютно чёрной.
 /// (Ресурс уже создан `PbrPlugin`, мы лишь приглушаем его.)
 fn setup_ambient_light(mut ambient_light: ResMut<AmbientLight>) {
-    ambient_light.color = Color::srgb(0.7, 0.75, 1.0);
-    ambient_light.brightness = 0.04;
+    ambient_light.color = Color::srgb(0.5, 0.58, 0.75);
+    ambient_light.brightness = 0.25;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,10 +224,10 @@ fn setup_menu(mut commands: Commands, mut windows: Query<&mut Window>) {
             ));
             parent.spawn((
                 Text::new(
-                    "WASD / ARROWS — MOVE      MOUSE — LOOK\n\
-                     SHIFT — RUN (DRAINS STAMINA)\n\
+                    "WASD / ARROWS - MOVE      MOUSE - LOOK\n\
+                     SHIFT - RUN (DRAINS STAMINA)\n\
                      BEWARE: RUNNING ON EMPTY STAMINA FEEDS YOUR MADNESS\n\
-                     FIND 5 ECHO FRAGMENTS TO ESCAPE      ESC — MENU",
+                     FIND 5 ECHO FRAGMENTS TO ESCAPE      ESC - MENU",
                 ),
                 TextFont {
                     font_size: 18.0,
@@ -262,7 +262,7 @@ fn menu_input(
     }
 }
 
-/// Мигание подсказки «PRESS ENTER...» (без таймера — по времени кадра).
+/// Мигание подсказки «PRESS ENTER...» (без таймера - по времени кадра).
 fn blink_menu_prompt(time: Res<Time>, mut query: Query<&mut Text, With<MenuPrompt>>) {
     let visible = (time.elapsed_secs() * 1.2).fract() < 0.6;
     for mut text in &mut query {
@@ -290,7 +290,7 @@ fn cell_center(cx: usize, cy: usize) -> (f32, f32) {
     )
 }
 
-/// Генератор лабиринта: итеративный backtracker (`true` — стена).
+/// Генератор лабиринта: итеративный backtracker (`true` - стена).
 /// После построения часть тупиков «заплетается» в петли, чтобы были обходы.
 fn generate_maze(w: usize, h: usize) -> Vec<Vec<bool>> {
     debug_assert!(w % 2 == 1 && h % 2 == 1, "maze size must be odd");
@@ -323,7 +323,7 @@ fn generate_maze(w: usize, h: usize) -> Vec<Vec<bool>> {
         }
     }
 
-    // Заплетаем ~35% тупиков: сносим одну стену — появляются петли.
+    // Заплетаем ~35% тупиков: сносим одну стену - появляются петли.
     const DIRS_1: [(isize, isize); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
     for cy in (1..h - 1).step_by(2) {
         for cx in (1..w - 1).step_by(2) {
@@ -355,7 +355,7 @@ fn generate_maze(w: usize, h: usize) -> Vec<Vec<bool>> {
 }
 
 /// Построение уровня при входе в игру: пол, потолок, стены, игрок с
-/// фонариком и 5 фрагментов эха в дальних клетках. Каждый забег — новый
+/// фонариком и 5 фрагментов эха в дальних клетках. Каждый забег - новый
 /// случайный лабиринт.
 fn generate_level(
     mut commands: Commands,
@@ -393,7 +393,7 @@ fn generate_level(
     let world_w = MAZE_W as f32 * CELL;
     let world_d = MAZE_H as f32 * CELL;
 
-    // Пол и потолок — две плиты на всю карту.
+    // Пол и потолок - две плиты на всю карту.
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(world_w, 0.2, world_d))),
         MeshMaterial3d(floor_mat.clone()),
@@ -434,7 +434,7 @@ fn generate_level(
         }
     }
 
-    // Игрок в клетке (1, 1): смотрим в открытый проход —
+    // Игрок в клетке (1, 1): смотрим в открытый проход -
     // сначала пробуем восток, иначе юг (один из них точно открыт).
     let (spawn_x, spawn_z) = cell_center(1, 1);
     let yaw = if !maze[1][2] {
@@ -457,7 +457,7 @@ fn generate_level(
             StateScoped(AppState::InGame),
         ))
         .with_children(|parent| {
-            // Фонарик — спотлайт, ребёнок камеры (светит туда же, куда смотрим).
+            // Фонарик - спотлайт, ребёнок камеры (светит туда же, куда смотрим).
             parent.spawn((
                 SpotLight {
                     color: Color::srgb(1.0, 0.95, 0.85),
@@ -490,7 +490,7 @@ fn generate_level(
         }
     }
     if candidates.len() < FRAGMENT_COUNT {
-        // Лабиринт тесный — fallback: просто самые дальние клетки пола.
+        // Лабиринт тесный - fallback: просто самые дальние клетки пола.
         let mut all: Vec<(usize, usize)> = Vec::new();
         for (cy, row) in maze.iter().enumerate() {
             for (cx, &is_wall) in row.iter().enumerate() {
@@ -536,7 +536,7 @@ fn spawn_fragment(
         Transform::from_translation(spot + Vec3::new(0.0, 1.2, 0.0)),
         PointLight {
             color: Color::srgb(0.45, 0.85, 1.0),
-            intensity: 30.0,
+            intensity: 200_000.0,
             range: 7.0,
             ..default()
         },
@@ -552,7 +552,7 @@ fn spawn_fragment(
 /// Построение HUD: виньетка безумия, прицел, счётчик, подсказка и панель
 /// стамины. Все элементы удаляются автоматически при выходе из игры.
 fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
-    // Виньетка безумия — первой, чтобы лежать ПОД остальным HUD.
+    // Виньетка безумия - первой, чтобы лежать ПОД остальным HUD.
     commands.spawn((
         Node {
             width: Val::Percent(100.0),
@@ -616,7 +616,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
         ))
         .with_children(|parent| {
             parent.spawn((
-                Text::new("WASD — MOVE   SHIFT — RUN   MOUSE — LOOK   ESC — MENU"),
+                Text::new("WASD - MOVE   SHIFT - RUN   MOUSE - LOOK   ESC - MENU"),
                 TextFont {
                     font_size: 15.0,
                     ..default()
@@ -699,7 +699,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
 // Фрагменты, победа, выход
 // ---------------------------------------------------------------------------
 
-/// Подбор фрагментов при приближении. Когда собраны все — победа.
+/// Подбор фрагментов при приближении. Когда собраны все - победа.
 fn collect_fragments(
     mut commands: Commands,
     players: Query<&Transform, With<Player>>,
@@ -777,7 +777,7 @@ fn spawn_win_overlay(commands: &mut Commands) {
                         StateScoped(AppState::InGame),
                     ));
                     panel.spawn((
-                        Text::new("R — PLAY AGAIN      ESC — MENU"),
+                        Text::new("R - PLAY AGAIN      ESC - MENU"),
                         TextFont {
                             font_size: 24.0,
                             ..default()
@@ -817,7 +817,7 @@ fn win_input(
     for entity in &overlays {
         commands.entity(entity).despawn();
     }
-    // Победа могла случиться прямо во время скримера — убираем и его картинку,
+    // Победа могла случиться прямо во время скримера - убираем и его картинку,
     // иначе она зависнет (тиканье ниже будет сброшено).
     for entity in &screamer_overlays {
         commands.entity(entity).despawn();

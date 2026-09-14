@@ -3,7 +3,7 @@
 //! - В [`AppState::MainMenu`](crate::AppState::MainMenu) играет `menu.mp3`.
 //! - В [`AppState::InGame`](crate::AppState::InGame) циклично сменяют друг
 //!   друга `ambient1.mp3` и `ambient2.mp3` (каждый с плавным нарастанием,
-//!   переключение — бесшовное, по факту окончания трека).
+//!   переключение - бесшовное, по факту окончания трека).
 //!
 //! Все аудиофайлы **опциональны**: если их нет в `assets/`, игра просто
 //! работает без звука и автоматически подхватывает файлы, когда они там
@@ -40,7 +40,7 @@ const RETRY_SECS: f32 = 5.0;
 // Утилиты
 // ---------------------------------------------------------------------------
 
-/// Проверка существования ассета на диске (`relative_path` — путь внутри
+/// Проверка существования ассета на диске (`relative_path` - путь внутри
 /// `assets/`, например `"audio/menu.mp3"`).
 ///
 /// Используется перед каждым `AssetServer::load`, чтобы:
@@ -121,7 +121,7 @@ impl Plugin for AudioDirectorPlugin {
 // Спавн треков
 // ---------------------------------------------------------------------------
 
-/// Создать сущность с зацикленной музыкой меню (старт с нуля громкости —
+/// Создать сущность с зацикленной музыкой меню (старт с нуля громкости -
 /// нарастание делает [`update_menu_music`]). Возвращает `None`, если файла
 /// нет на диске.
 fn spawn_menu_music(commands: &mut Commands, assets: &AssetServer) -> Option<Entity> {
@@ -139,7 +139,7 @@ fn spawn_menu_music(commands: &mut Commands, assets: &AssetServer) -> Option<Ent
     )
 }
 
-/// Создать сущность с одноразовым треком амбиента (переключение треков —
+/// Создать сущность с одноразовым треком амбиента (переключение треков -
 /// в [`update_ambient_cycle`]). Возвращает `None`, если файла нет на диске.
 fn spawn_ambient(
     commands: &mut Commands,
@@ -166,7 +166,7 @@ fn spawn_ambient(
 // ---------------------------------------------------------------------------
 
 /// Вход в меню: (пере)запуск `menu.mp3`. Если музыка ещё гасла после выхода
-/// из игры — отменяем затухание и возвращаем громкость.
+/// из игры - отменяем затухание и возвращаем громкость.
 fn start_menu_music(
     mut commands: Commands,
     assets: Res<AssetServer>,
@@ -180,7 +180,7 @@ fn start_menu_music(
         if director.menu_entity.is_some() {
             info!("Menu music started: {MENU_MUSIC}");
         } else {
-            info!("{MENU_MUSIC} not found — running silent (will retry automatically)");
+            info!("{MENU_MUSIC} not found - running silent (will retry automatically)");
         }
     }
 }
@@ -205,7 +205,7 @@ fn retry_menu_music(
 }
 
 /// Плавное нарастание/затухание меню-музыки через [`AudioSink`].
-/// Работает в обоих состояниях: в меню — нарастание, в игре — затухание.
+/// Работает в обоих состояниях: в меню - нарастание, в игре - затухание.
 fn update_menu_music(
     time: Res<Time>,
     mut commands: Commands,
@@ -215,7 +215,7 @@ fn update_menu_music(
     let Some(entity) = director.menu_entity else {
         return;
     };
-    // Сина ещё нет — воспроизведение не началось (ассет грузится), ждём.
+    // Сина ещё нет - воспроизведение не началось (ассет грузится), ждём.
     let Ok(mut sink) = sinks.get_mut(entity) else {
         return;
     };
@@ -253,7 +253,7 @@ fn begin_game_audio(
         if director.ambient_entity.is_some() {
             info!("Ambient cycle started");
         } else {
-            info!("Ambient files not found — running silent (will retry automatically)");
+            info!("Ambient files not found - running silent (will retry automatically)");
         }
     }
 }
@@ -269,7 +269,7 @@ fn update_ambient_cycle(
     mut sinks: Query<&mut AudioSink>,
 ) {
     let Some(entity) = director.ambient_entity else {
-        // Трека нет (файлы отсутствуют) — периодически пробуем снова:
+        // Трека нет (файлы отсутствуют) - периодически пробуем снова:
         // амбиент, положенный в assets/ при запущенной игре, подхватится сам.
         director.retry.tick(time.delta());
         if director.retry.just_finished() {
@@ -294,7 +294,7 @@ fn update_ambient_cycle(
     if !sink.empty() {
         director.ambient_heard = true;
     }
-    // Трек закончился — переходим на следующий из пары (1 -> 2 -> 1 -> ...).
+    // Трек закончился - переходим на следующий из пары (1 -> 2 -> 1 -> ...).
     if director.ambient_heard && sink.empty() && director.ambient_time > 2.0 {
         commands.entity(entity).despawn();
         director.ambient_index = (director.ambient_index + 1) % AMBIENT_TRACKS.len();
