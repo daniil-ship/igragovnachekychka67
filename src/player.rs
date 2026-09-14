@@ -5,6 +5,7 @@
 //! («принудительный бег»), который сводит героя с ума
 //! (см. [`crate::hallucinations`]).
 
+use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
 
 use crate::hallucinations::Insanity;

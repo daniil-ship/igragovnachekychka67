@@ -120,6 +120,9 @@ fn main() {
         .insert_resource(LevelColliders::default())
         .insert_resource(GameProgress::default())
         .init_state::<AppState>()
+        // В Bevy 0.16 state-scoped сущности включаются явно,
+        // иначе маркеры DespawnOnExit не будут ничего удалять.
+        .enable_state_scoped_entities::<AppState>()
         .add_plugins((PlayerPlugin, AudioDirectorPlugin, HallucinationsPlugin))
         // Холодный тусклый свет окружения.
         .add_systems(Startup, setup_ambient_light)
