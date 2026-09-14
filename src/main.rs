@@ -14,7 +14,7 @@ mod player;
 
 use audio::AudioDirectorPlugin;
 use bevy::prelude::*;
-use bevy::state::state_scoped::DespawnOnExit;
+use bevy::state::state_scoped::StateScoped;
 use bevy::window::{CursorGrabMode, WindowPlugin, WindowResolution};
 use hallucinations::{HallucinationsPlugin, Insanity, ScreamerOverlay, ScreamerState};
 use player::{
@@ -122,7 +122,7 @@ fn main() {
         .insert_resource(GameProgress::default())
         .init_state::<AppState>()
         // В Bevy 0.16 state-scoped сущности включаются явно,
-        // иначе маркеры DespawnOnExit не будут ничего удалять.
+        // иначе маркеры StateScoped не будут ничего удалять.
         .enable_state_scoped_entities::<AppState>()
         .add_plugins((PlayerPlugin, AudioDirectorPlugin, HallucinationsPlugin))
         // Холодный тусклый свет окружения.
@@ -177,7 +177,7 @@ fn setup_menu(mut commands: Commands, mut windows: Query<&mut Window>) {
         window.cursor_options.visible = true;
     }
 
-    commands.spawn((Camera2d, DespawnOnExit(AppState::MainMenu)));
+    commands.spawn((Camera2d, StateScoped(AppState::MainMenu)));
 
     commands
         .spawn((
@@ -191,7 +191,7 @@ fn setup_menu(mut commands: Commands, mut windows: Query<&mut Window>) {
                 ..default()
             },
             BackgroundColor(Color::srgb(0.012, 0.004, 0.006)),
-            DespawnOnExit(AppState::MainMenu),
+            StateScoped(AppState::MainMenu),
         ))
         .with_children(|parent| {
             parent.spawn((
@@ -201,7 +201,7 @@ fn setup_menu(mut commands: Commands, mut windows: Query<&mut Window>) {
                     ..default()
                 },
                 TextColor(Color::srgb(0.72, 0.08, 0.08)),
-                DespawnOnExit(AppState::MainMenu),
+                StateScoped(AppState::MainMenu),
             ));
             parent.spawn((
                 Text::new("A PSYCHOLOGICAL HORROR"),
@@ -210,7 +210,7 @@ fn setup_menu(mut commands: Commands, mut windows: Query<&mut Window>) {
                     ..default()
                 },
                 TextColor(Color::srgb(0.45, 0.42, 0.45)),
-                DespawnOnExit(AppState::MainMenu),
+                StateScoped(AppState::MainMenu),
             ));
             parent.spawn((
                 Text::new("PRESS ENTER OR CLICK TO BEGIN"),
@@ -220,7 +220,7 @@ fn setup_menu(mut commands: Commands, mut windows: Query<&mut Window>) {
                 },
                 TextColor(Color::srgb(0.85, 0.8, 0.78)),
                 MenuPrompt,
-                DespawnOnExit(AppState::MainMenu),
+                StateScoped(AppState::MainMenu),
             ));
             parent.spawn((
                 Text::new(
@@ -234,7 +234,7 @@ fn setup_menu(mut commands: Commands, mut windows: Query<&mut Window>) {
                     ..default()
                 },
                 TextColor(Color::srgb(0.5, 0.48, 0.5)),
-                DespawnOnExit(AppState::MainMenu),
+                StateScoped(AppState::MainMenu),
             ));
             parent.spawn((
                 Text::new("HEADPHONES RECOMMENDED"),
@@ -243,7 +243,7 @@ fn setup_menu(mut commands: Commands, mut windows: Query<&mut Window>) {
                     ..default()
                 },
                 TextColor(Color::srgb(0.5, 0.12, 0.12)),
-                DespawnOnExit(AppState::MainMenu),
+                StateScoped(AppState::MainMenu),
             ));
         });
 }
@@ -398,13 +398,13 @@ fn generate_level(
         Mesh3d(meshes.add(Cuboid::new(world_w, 0.2, world_d))),
         MeshMaterial3d(floor_mat.clone()),
         Transform::from_xyz(0.0, -0.1, 0.0),
-        DespawnOnExit(AppState::InGame),
+        StateScoped(AppState::InGame),
     ));
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(world_w, 0.2, world_d))),
         MeshMaterial3d(floor_mat),
         Transform::from_xyz(0.0, WALL_H + 0.1, 0.0),
-        DespawnOnExit(AppState::InGame),
+        StateScoped(AppState::InGame),
     ));
 
     // Стены: по кубу на каждую клетку-стену + коллайдер.
@@ -423,7 +423,7 @@ fn generate_level(
                 Mesh3d(meshes.add(Cuboid::new(CELL, WALL_H, CELL))),
                 MeshMaterial3d(mat),
                 Transform::from_xyz(x, WALL_H / 2.0, z),
-                DespawnOnExit(AppState::InGame),
+                StateScoped(AppState::InGame),
             ));
             colliders.walls.push(WallAabb {
                 min_x: x - CELL / 2.0,
@@ -454,7 +454,7 @@ fn generate_level(
             Stamina::default(),
             ForcedRun(false),
             Insanity(0.0),
-            DespawnOnExit(AppState::InGame),
+            StateScoped(AppState::InGame),
         ))
         .with_children(|parent| {
             // Фонарик — спотлайт, ребёнок камеры (светит туда же, куда смотрим).
@@ -472,7 +472,7 @@ fn generate_level(
                 Flashlight {
                     base_intensity: player::FLASHLIGHT_INTENSITY,
                 },
-                DespawnOnExit(AppState::InGame),
+                StateScoped(AppState::InGame),
             ));
         });
 
@@ -541,7 +541,7 @@ fn spawn_fragment(
             ..default()
         },
         EchoFragment,
-        DespawnOnExit(AppState::InGame),
+        StateScoped(AppState::InGame),
     ));
 }
 
@@ -561,7 +561,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
         },
         BackgroundColor(Color::srgba(0.55, 0.02, 0.03, 0.0)),
         InsanityVignette,
-        DespawnOnExit(AppState::InGame),
+        StateScoped(AppState::InGame),
     ));
 
     // Прицел-точка по центру экрана.
@@ -575,7 +575,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
             ..default()
         },
         BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.7)),
-        DespawnOnExit(AppState::InGame),
+        StateScoped(AppState::InGame),
     ));
 
     // Счётчик фрагментов (сверху слева).
@@ -588,7 +588,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
                 top: Val::Px(16.0),
                 ..default()
             },
-            DespawnOnExit(AppState::InGame),
+            StateScoped(AppState::InGame),
         ))
         .with_children(|parent| {
             parent.spawn((
@@ -599,7 +599,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
                 },
                 TextColor(Color::srgb(0.75, 0.85, 0.9)),
                 FragmentCounterText,
-                DespawnOnExit(AppState::InGame),
+                StateScoped(AppState::InGame),
             ));
         });
 
@@ -612,7 +612,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
                 bottom: Val::Px(16.0),
                 ..default()
             },
-            DespawnOnExit(AppState::InGame),
+            StateScoped(AppState::InGame),
         ))
         .with_children(|parent| {
             parent.spawn((
@@ -622,7 +622,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
                     ..default()
                 },
                 TextColor(Color::srgba(1.0, 1.0, 1.0, 0.45)),
-                DespawnOnExit(AppState::InGame),
+                StateScoped(AppState::InGame),
             ));
         });
 
@@ -636,7 +636,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            DespawnOnExit(AppState::InGame),
+            StateScoped(AppState::InGame),
         ))
         .with_children(|parent| {
             parent
@@ -647,7 +647,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
                         row_gap: Val::Px(6.0),
                         ..default()
                     },
-                    DespawnOnExit(AppState::InGame),
+                    StateScoped(AppState::InGame),
                 ))
                 .with_children(|panel| {
                     panel.spawn((
@@ -658,7 +658,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
                         },
                         TextColor(Color::srgb(1.0, 0.25, 0.2)),
                         WarningText,
-                        DespawnOnExit(AppState::InGame),
+                        StateScoped(AppState::InGame),
                     ));
                     panel
                         .spawn((
@@ -668,7 +668,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
                                 ..default()
                             },
                             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.65)),
-                            DespawnOnExit(AppState::InGame),
+                            StateScoped(AppState::InGame),
                         ))
                         .with_children(|bar| {
                             bar.spawn((
@@ -679,7 +679,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
                                 },
                                 BackgroundColor(Color::srgb(0.2, 0.8, 0.25)),
                                 StaminaFill,
-                                DespawnOnExit(AppState::InGame),
+                                StateScoped(AppState::InGame),
                             ));
                         });
                     panel.spawn((
@@ -689,7 +689,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
                             ..default()
                         },
                         TextColor(Color::srgba(1.0, 1.0, 1.0, 0.55)),
-                        DespawnOnExit(AppState::InGame),
+                        StateScoped(AppState::InGame),
                     ));
                 });
         });
@@ -744,7 +744,7 @@ fn spawn_win_overlay(commands: &mut Commands) {
             },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.78)),
             WinOverlay,
-            DespawnOnExit(AppState::InGame),
+            StateScoped(AppState::InGame),
         ))
         .with_children(|parent| {
             parent
@@ -763,7 +763,7 @@ fn spawn_win_overlay(commands: &mut Commands) {
                     },
                     BackgroundColor(Color::srgb(0.03, 0.02, 0.025)),
                     WinOverlay,
-                    DespawnOnExit(AppState::InGame),
+                    StateScoped(AppState::InGame),
                 ))
                 .with_children(|panel| {
                     panel.spawn((
@@ -774,7 +774,7 @@ fn spawn_win_overlay(commands: &mut Commands) {
                         },
                         TextColor(Color::srgb(0.8, 0.85, 0.9)),
                         WinOverlay,
-                        DespawnOnExit(AppState::InGame),
+                        StateScoped(AppState::InGame),
                     ));
                     panel.spawn((
                         Text::new("R — PLAY AGAIN      ESC — MENU"),
@@ -784,7 +784,7 @@ fn spawn_win_overlay(commands: &mut Commands) {
                         },
                         TextColor(Color::srgb(0.55, 0.55, 0.6)),
                         WinOverlay,
-                        DespawnOnExit(AppState::InGame),
+                        StateScoped(AppState::InGame),
                     ));
                 });
         });

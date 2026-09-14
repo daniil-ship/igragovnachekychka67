@@ -20,7 +20,7 @@
 
 use bevy::audio::Volume;
 use bevy::prelude::*;
-use bevy::state::state_scoped::DespawnOnExit;
+use bevy::state::state_scoped::StateScoped;
 use rand::Rng;
 
 use crate::audio::asset_exists;
@@ -207,7 +207,7 @@ fn fire_screamer(
             fullscreen,
             ImageNode::new(handle),
             ScreamerOverlay,
-            DespawnOnExit(AppState::InGame),
+            StateScoped(AppState::InGame),
         ));
     } else {
         // PNG нет — игра продолжается, мигает красно-чёрная заглушка.
@@ -218,7 +218,7 @@ fn fire_screamer(
             BackgroundColor(Color::srgb(0.6, 0.0, 0.0)),
             FallbackFlash,
             ScreamerOverlay,
-            DespawnOnExit(AppState::InGame),
+            StateScoped(AppState::InGame),
         ));
     }
 
@@ -228,7 +228,7 @@ fn fire_screamer(
         commands.spawn((
             AudioPlayer::new(handle),
             PlaybackSettings::DESPAWN.with_volume(Volume::Linear(1.0)),
-            DespawnOnExit(AppState::InGame),
+            StateScoped(AppState::InGame),
         ));
     } else {
         warn!("{sound_path} not found — screamer without sound (drop the file into assets/ to enable it)");
