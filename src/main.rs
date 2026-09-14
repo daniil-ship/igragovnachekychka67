@@ -7,21 +7,23 @@
 //! - [`player`] - игрок: движение, стамина, принудительный бег, фонарик, HUD;
 //! - [`audio`] - звукорежиссёр: музыка меню и циклический амбиент;
 //! - [`hallucinations`] - безумие и скримеры (PNG на весь экран + MP3).
+//! - [`atmosphere`] - лампы, туман, пыль, виньетка и зерно плёнки.
 
+mod atmosphere;
 mod audio;
 mod hallucinations;
 mod player;
 mod shadow;
 mod textures;
 
+use atmosphere::AtmospherePlugin;
 use audio::AudioDirectorPlugin;
 use bevy::prelude::*;
 use bevy::state::state_scoped::StateScoped;
 use bevy::window::{CursorGrabMode, WindowPlugin, WindowResolution};
 use hallucinations::{HallucinationsPlugin, Insanity, ScreamerOverlay, ScreamerState};
 use player::{
-    Flashlight, ForcedRun, FragmentCounterText, InsanityVignette, Player, PlayerPlugin, Stamina,
-    StaminaFill, WarningText,
+    Flashlight, ForcedRun, InsanityVignette, Player, PlayerPlugin, Stamina, StaminaFill,
 };
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -55,7 +57,7 @@ pub const TEX_CEIL: &str = "textures/ceil.png";
 
 /// Глобальные состояния игры.
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-enum AppState {
+pub(crate) enum AppState {
     /// Главное меню (музыка `menu.mp3`).
     #[default]
     MainMenu,
@@ -143,6 +145,7 @@ fn main() {
         .add_plugins((
             PlayerPlugin,
             AudioDirectorPlugin,
+            AtmospherePlugin,
             HallucinationsPlugin,
             ShadowPlugin,
         ))
@@ -181,9 +184,10 @@ pub fn game_input_allowed(
 
 /// Едва заметный холодный свет, чтобы тьма не была абсолютно чёрной.
 /// (Ресурс уже создан `PbrPlugin`, мы лишь приглушаем его.)
+/// Основной свет теперь дают потолочные лампы (см. [`atmosphere`]).
 fn setup_ambient_light(mut ambient_light: ResMut<AmbientLight>) {
     ambient_light.color = Color::srgb(0.5, 0.58, 0.75);
-    ambient_light.brightness = 0.25;
+    ambient_light.brightness = 0.09;
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +308,7 @@ fn blink_menu_prompt(time: Res<Time>, mut query: Query<&mut Text, With<MenuPromp
 
 /// Центр клетки лабиринта в мировых координатах (x, z). Карта центрирована
 /// в начале координат.
-fn cell_center(cx: usize, cy: usize) -> (f32, f32) {
+pub(crate) fn cell_center(cx: usize, cy: usize) -> (f32, f32) {
     (
         (cx as f32 - MAZE_W as f32 / 2.0 + 0.5) * CELL,
         (cy as f32 - MAZE_H as f32 / 2.0 + 0.5) * CELL,
@@ -426,7 +430,8 @@ fn generate_level(
     let floor_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 1.0, 1.0),
         base_color_texture: Some(floor_tex),
-        perceptual_roughness: 0.95,
+        // Полусухой грязный пол: бликует под лампами вместо матовой каши.
+        perceptual_roughness: 0.45,
         ..default()
     });
     let ceil_mat = materials.add(StandardMaterial {
@@ -488,6 +493,15 @@ fn generate_level(
         }
     }
 
+    // Потолочные лампы, мигающие и разбитые плафоны, тёмные зоны.
+    atmosphere::spawn_lamps(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &mut images,
+        &maze,
+    );
+
     // Игрок в клетке (1, 1): смотрим в открытый проход -
     // сначала пробуем восток, иначе юг (один из них точно открыт).
     let (spawn_x, spawn_z) = cell_center(1, 1);
@@ -499,6 +513,14 @@ fn generate_level(
     commands
         .spawn((
             Camera3d::default(),
+            // Густой чёрный туман: дальние коридоры тонут во тьме.
+            DistanceFog {
+                color: Color::srgb(0.008, 0.009, 0.014),
+                falloff: FogFalloff::Exponential {
+                    density: atmosphere::FOG_DENSITY,
+                },
+                ..default()
+            },
             Transform {
                 translation: Vec3::new(spawn_x, player::EYE_HEIGHT, spawn_z),
                 rotation: Quat::from_euler(EulerRot::YXZ, yaw, 0.0, 0.0),
@@ -603,9 +625,10 @@ fn spawn_fragment(
 // HUD
 // ---------------------------------------------------------------------------
 
-/// Построение HUD: виньетка безумия, прицел, счётчик, подсказка и панель
-/// стамины. Все элементы удаляются автоматически при выходе из игры.
-fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
+/// Построение HUD: виньетка безумия, маленькая тусклая полоска стамины
+/// и кино-оверлеи (виньетка + зерно плёнки). Никаких подсказок, прицела
+/// и счётчиков - только стамина. Всё удаляется автоматически при выходе.
+fn setup_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     // Виньетка безумия - первой, чтобы лежать ПОД остальным HUD.
     commands.spawn((
         Node {
@@ -618,69 +641,7 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
         StateScoped(AppState::InGame),
     ));
 
-    // Прицел-точка по центру экрана.
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Percent(50.0),
-            top: Val::Percent(50.0),
-            width: Val::Px(5.0),
-            height: Val::Px(5.0),
-            ..default()
-        },
-        BackgroundColor(Color::srgba(1.0, 1.0, 1.0, 0.7)),
-        StateScoped(AppState::InGame),
-    ));
-
-    // Счётчик фрагментов (сверху слева).
-    let counter_text = format!("FRAGMENTS: {}/{}", progress.collected, progress.total);
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(18.0),
-                top: Val::Px(16.0),
-                ..default()
-            },
-            StateScoped(AppState::InGame),
-        ))
-        .with_children(|parent| {
-            parent.spawn((
-                Text::new(counter_text),
-                TextFont {
-                    font_size: 26.0,
-                    ..default()
-                },
-                TextColor(Color::srgb(0.75, 0.85, 0.9)),
-                FragmentCounterText,
-                StateScoped(AppState::InGame),
-            ));
-        });
-
-    // Подсказка управления (снизу слева).
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(18.0),
-                bottom: Val::Px(16.0),
-                ..default()
-            },
-            StateScoped(AppState::InGame),
-        ))
-        .with_children(|parent| {
-            parent.spawn((
-                Text::new("WASD - MOVE   SHIFT - RUN   MOUSE - LOOK   ESC - MENU"),
-                TextFont {
-                    font_size: 15.0,
-                    ..default()
-                },
-                TextColor(Color::srgba(1.0, 1.0, 1.0, 0.45)),
-                StateScoped(AppState::InGame),
-            ));
-        });
-
-    // Панель стамины (снизу по центру): предупреждение + полоска + подпись.
+    // Панель стамины (снизу по центру): только маленькая тусклая полоска.
     commands
         .spawn((
             Node {
@@ -704,24 +665,14 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
                     StateScoped(AppState::InGame),
                 ))
                 .with_children(|panel| {
-                    panel.spawn((
-                        Text::new(""),
-                        TextFont {
-                            font_size: 22.0,
-                            ..default()
-                        },
-                        TextColor(Color::srgb(1.0, 0.25, 0.2)),
-                        WarningText,
-                        StateScoped(AppState::InGame),
-                    ));
                     panel
                         .spawn((
                             Node {
-                                width: Val::Px(340.0),
-                                height: Val::Px(18.0),
+                                width: Val::Px(150.0),
+                                height: Val::Px(5.0),
                                 ..default()
                             },
-                            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.65)),
+                            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.45)),
                             StateScoped(AppState::InGame),
                         ))
                         .with_children(|bar| {
@@ -731,22 +682,16 @@ fn setup_hud(mut commands: Commands, progress: Res<GameProgress>) {
                                     height: Val::Percent(100.0),
                                     ..default()
                                 },
-                                BackgroundColor(Color::srgb(0.2, 0.8, 0.25)),
+                                BackgroundColor(Color::srgb(0.25, 0.45, 0.15)),
                                 StaminaFill,
                                 StateScoped(AppState::InGame),
                             ));
                         });
-                    panel.spawn((
-                        Text::new("STAMINA"),
-                        TextFont {
-                            font_size: 14.0,
-                            ..default()
-                        },
-                        TextColor(Color::srgba(1.0, 1.0, 1.0, 0.55)),
-                        StateScoped(AppState::InGame),
-                    ));
                 });
         });
+
+    // Постоянная тёмная виньетка + зерно плёнки поверх остального HUD.
+    atmosphere::spawn_cinematic_overlays(&mut commands, &mut images);
 }
 
 // ---------------------------------------------------------------------------

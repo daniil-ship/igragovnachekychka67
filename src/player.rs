@@ -85,14 +85,6 @@ pub struct Flashlight {
 #[derive(Component)]
 pub struct StaminaFill;
 
-/// Предупреждение о принудительном беге.
-#[derive(Component)]
-pub struct WarningText;
-
-/// Счётчик собранных фрагментов эха.
-#[derive(Component)]
-pub struct FragmentCounterText;
-
 /// Красная виньетка безумия на весь экран.
 #[derive(Component)]
 pub struct InsanityVignette;
@@ -309,52 +301,29 @@ fn flashlight_flicker(
     }
 }
 
-/// Обновление HUD: полоска стамины, предупреждение, счётчик и виньетка.
+/// Обновление HUD: тусклая полоска стамины и красная виньетка безумия.
 ///
 /// Обратите внимание на `Without`-фильтры: они нужны, чтобы запросы,
-/// мутабельно трогающие одни и те же типы компонентов (`Text`,
-/// `BackgroundColor`), были гарантированно непересекающимися.
+/// мутабельно трогающие `BackgroundColor`, были гарантированно
+/// непересекающимися.
 fn hud_system(
     time: Res<Time>,
-    player_query: Query<(&Stamina, &ForcedRun, &Insanity)>,
+    player_query: Query<(&Stamina, &Insanity)>,
     mut fill_query: Query<
         (&mut Node, &mut BackgroundColor),
         (With<StaminaFill>, Without<InsanityVignette>),
     >,
-    mut warning_query: Query<&mut Text, (With<WarningText>, Without<FragmentCounterText>)>,
-    mut counter_query: Query<&mut Text, (With<FragmentCounterText>, Without<WarningText>)>,
     mut vignette_query: Query<&mut BackgroundColor, (With<InsanityVignette>, Without<StaminaFill>)>,
-    progress: Res<GameProgress>,
 ) {
-    let Some((stamina, forced, insanity)) = player_query.iter().next() else {
+    let Some((stamina, insanity)) = player_query.iter().next() else {
         return;
     };
 
-    // Полоска стамины: ширина по проценту + цвет от зелёного к красному.
+    // Тусклая полоска стамины: ширина по проценту + приглушённый цвет.
     let ratio = (stamina.current / Stamina::MAX).clamp(0.0, 1.0);
     for (mut node, mut color) in &mut fill_query {
         node.width = Val::Percent(ratio * 100.0);
-        color.0 = Color::srgb(0.9 * (1.0 - ratio) + 0.15, 0.75 * ratio + 0.1, 0.12);
-    }
-
-    // Предупреждение видно только в принудительном беге.
-    for mut text in &mut warning_query {
-        let message = if forced.0 {
-            "!! FORCED RUN - YOUR MIND IS SLIPPING !!"
-        } else {
-            ""
-        };
-        if text.0.as_str() != message {
-            text.0 = message.to_string();
-        }
-    }
-
-    // Счётчик фрагментов.
-    for mut text in &mut counter_query {
-        let message = format!("FRAGMENTS: {}/{}", progress.collected, progress.total);
-        if text.0 != message {
-            text.0 = message;
-        }
+        color.0 = Color::srgb(0.38 * (1.0 - ratio) + 0.07, 0.32 * ratio + 0.05, 0.06);
     }
 
     // Виньетка безумия: красная дымка по краям, пульсирует.
