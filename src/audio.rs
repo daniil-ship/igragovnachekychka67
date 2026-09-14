@@ -1,6 +1,8 @@
 //! Звукорежиссёр: музыка меню и циклический амбиент с плавными переходами.
 //!
-//! - В [`AppState::MainMenu`](crate::AppState::MainMenu) играет `menu.mp3`.
+//! - В [`AppState::MainMenu`](crate::AppState::MainMenu) играет `menu.mp3`
+//!   (одноразовый запуск + ручной перезапуск: штатный `LOOP` этот трек
+//!   почему-то оставлял немым, а `ONCE`+перезапуск проверен на амбиенте).
 //! - В [`AppState::InGame`](crate::AppState::InGame) циклично сменяют друг
 //!   друга `ambient1.mp3` и `ambient2.mp3` (каждый с плавным нарастанием,
 //!   переключение - бесшовное, по факту окончания трека).
@@ -33,6 +35,9 @@ const AMBIENT_VOLUME: f32 = 0.6;
 const FADE_IN_SECS: f32 = 3.0;
 /// Длительность плавного затухания при смене состояния, секунды.
 const FADE_OUT_SECS: f32 = 1.5;
+/// Сколько секунд ждём появления AudioSink после спавна меню-музыки.
+/// Если сина нет - звук не стартовал: предупреждаем и переспавниваем.
+const MENU_SINK_TIMEOUT_SECS: f32 = 5.0;
 /// Как часто перепроверять наличие отсутствующих файлов, секунды.
 const RETRY_SECS: f32 = 5.0;
 
@@ -74,6 +79,11 @@ struct AudioDirector {
     menu_fading_out: bool,
     /// В консоль уже писали, что меню-музыка слышна (чтобы не спамить).
     menu_announced: bool,
+    /// Трек меню реально звучал (защита от мгновенного перезапуска,
+    /// пока звук ещё не потёк - `empty()` до старта тоже true).
+    menu_heard: bool,
+    /// Сколько секунд после спавна нет AudioSink (звук не стартовал).
+    menu_no_sink: f32,
     /// Сущность с текущим треком амбиента (если играет).
     ambient_entity: Option<Entity>,
     /// Индекс следующего трека амбиента в [`AMBIENT_TRACKS`].
@@ -95,6 +105,8 @@ impl Default for AudioDirector {
             menu_level: 0.0,
             menu_fading_out: false,
             menu_announced: false,
+            menu_heard: false,
+            menu_no_sink: 0.0,
             ambient_entity: None,
             ambient_index: 0,
             ambient_level: 0.0,
@@ -131,8 +143,9 @@ impl Plugin for AudioDirectorPlugin {
 // Спавн треков
 // ---------------------------------------------------------------------------
 
-/// Создать сущность с зацикленной музыкой меню (старт с нуля громкости -
-/// нарастание делает [`update_menu_music`]). Возвращает `None`, если файла
+/// Создать сущность с одноразовой музыкой меню (старт с нуля громкости -
+/// нарастание делает [`update_menu_music`]). Зацикливание - ручное, там же:
+/// штатный LOOP этот трек оставлял немым. Возвращает `None`, если файла
 /// нет на диске.
 fn spawn_menu_music(commands: &mut Commands, assets: &AssetServer) -> Option<Entity> {
     if !asset_exists(MENU_MUSIC) {
@@ -143,7 +156,7 @@ fn spawn_menu_music(commands: &mut Commands, assets: &AssetServer) -> Option<Ent
         commands
             .spawn((
                 AudioPlayer::new(handle),
-                PlaybackSettings::LOOP.with_volume(Volume::Linear(0.0)),
+                PlaybackSettings::ONCE.with_volume(Volume::Linear(0.0)),
             ))
             .id(),
     )
@@ -188,6 +201,8 @@ fn start_menu_music(
         director.menu_entity = spawn_menu_music(&mut commands, &assets);
         director.menu_level = 0.0;
         director.menu_announced = false;
+        director.menu_heard = false;
+        director.menu_no_sink = 0.0;
         if director.menu_entity.is_some() {
             info!("Menu music started: {MENU_MUSIC}");
         } else {
@@ -216,24 +231,46 @@ fn retry_menu_music(
         director.menu_entity = spawn_menu_music(&mut commands, &assets);
         director.menu_level = 0.0;
         director.menu_announced = false;
+        director.menu_heard = false;
+        director.menu_no_sink = 0.0;
     }
 }
 
-/// Плавное нарастание/затухание меню-музыки через [`AudioSink`].
-/// Работает в обоих состояниях: в меню - нарастание, в игре - затухание.
+/// Нарастание/затухание меню-музыки через [`AudioSink`] + ручной перезапуск.
+/// Работает в обоих состояниях: в меню - нарастание и loop, в игре - затухание.
 fn update_menu_music(
     time: Res<Time>,
     mut commands: Commands,
+    assets: Res<AssetServer>,
     mut director: ResMut<AudioDirector>,
     mut sinks: Query<&mut AudioSink>,
 ) {
     let Some(entity) = director.menu_entity else {
         return;
     };
-    // Сина ещё нет - воспроизведение не началось (ассет грузится), ждём.
+    // Сина нет - звук не стартовал (ассет грузится или что-то пошло не так).
     let Ok(mut sink) = sinks.get_mut(entity) else {
+        // В игре гаснущему треку без сина переспавн не нужен - просто убираем.
+        if director.menu_fading_out {
+            commands.entity(entity).despawn();
+            director.menu_entity = None;
+            return;
+        }
+        director.menu_no_sink += time.delta_secs();
+        if director.menu_no_sink > MENU_SINK_TIMEOUT_SECS {
+            warn!(
+                "{MENU_MUSIC} spawned but audio never started - forcing respawn (check console for asset errors)"
+            );
+            commands.entity(entity).despawn();
+            director.menu_entity = spawn_menu_music(&mut commands, &assets);
+            director.menu_level = 0.0;
+            director.menu_heard = false;
+            director.menu_no_sink = 0.0;
+            director.menu_announced = false;
+        }
         return;
     };
+    director.menu_no_sink = 0.0;
     let dt = time.delta_secs();
     if director.menu_fading_out {
         director.menu_level = (director.menu_level - dt / FADE_OUT_SECS).max(0.0);
@@ -241,10 +278,27 @@ fn update_menu_music(
         director.menu_level = (director.menu_level + dt / FADE_IN_SECS).min(1.0);
     }
     sink.set_volume(Volume::Linear(MENU_VOLUME * director.menu_level));
+    if !sink.empty() {
+        director.menu_heard = true;
+    }
     // Подтверждение в консоль, что музыка реально слышна (диагностика «нет звука»).
     if !director.menu_announced && director.menu_level >= 1.0 {
         director.menu_announced = true;
         info!("Menu music playing at full volume");
+    }
+    // Трек одноразовый: закончился - запускаем заново (ручной loop).
+    // `menu_level >= 1.0` гарантирует, что прошло ~3 секунды (как time-гард у амбиента).
+    if !director.menu_fading_out
+        && director.menu_heard
+        && director.menu_level >= 1.0
+        && sink.empty()
+    {
+        commands.entity(entity).despawn();
+        director.menu_entity = spawn_menu_music(&mut commands, &assets);
+        director.menu_level = 0.0;
+        director.menu_heard = false;
+        director.menu_no_sink = 0.0;
+        return;
     }
     if director.menu_fading_out && director.menu_level <= 0.0 {
         commands.entity(entity).despawn();
