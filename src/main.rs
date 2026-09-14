@@ -16,6 +16,8 @@ mod player;
 mod shadow;
 mod textures;
 
+use std::path::PathBuf;
+
 use atmosphere::AtmospherePlugin;
 use audio::AudioDirectorPlugin;
 use bevy::prelude::*;
@@ -104,6 +106,24 @@ impl Default for GameProgress {
     }
 }
 
+/// Настройки из меню (живут всю сессию, между состояниями не сбрасываются).
+#[derive(Resource)]
+pub struct GameSettings {
+    /// Зерно плёнки поверх картинки.
+    pub film_grain: bool,
+    /// Тёмная виньетка по краям экрана.
+    pub vignette: bool,
+}
+
+impl Default for GameSettings {
+    fn default() -> Self {
+        Self {
+            film_grain: true,
+            vignette: true,
+        }
+    }
+}
+
 /// Светящийся фрагмент эха - цель забега (5 штук в дальних углах лабиринта).
 #[derive(Component)]
 struct EchoFragment;
@@ -120,11 +140,24 @@ struct DeathOverlay;
 #[derive(Component)]
 struct MenuPrompt;
 
+/// Действие кнопки настроек в меню.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+enum SettingsAction {
+    ToggleGrain,
+    ToggleVignette,
+}
+
+/// Подпись кнопки настроек (висит на тексте, ребёнке кнопки).
+#[derive(Component)]
+struct SettingsLabel(SettingsAction);
+
 // ---------------------------------------------------------------------------
 // Точка входа
 // ---------------------------------------------------------------------------
 
 fn main() {
+    // Сначала - гарантируем видимость assets/ (иначе нет музыки и PNG).
+    ensure_asset_root();
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -138,6 +171,7 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.005, 0.005, 0.01)))
         .insert_resource(LevelColliders::default())
         .insert_resource(GameProgress::default())
+        .insert_resource(GameSettings::default())
         .init_state::<AppState>()
         // В Bevy 0.16 state-scoped сущности включаются явно,
         // иначе маркеры StateScoped не будут ничего удалять.
@@ -155,7 +189,7 @@ fn main() {
         .add_systems(OnEnter(AppState::MainMenu), setup_menu)
         .add_systems(
             Update,
-            (menu_input, blink_menu_prompt).run_if(in_state(AppState::MainMenu)),
+            (menu_input, blink_menu_prompt, settings_buttons).run_if(in_state(AppState::MainMenu)),
         )
         // Игра: генерация, HUD, курсор, сбор фрагментов, победа, выход.
         .add_systems(OnEnter(AppState::InGame), (generate_level, setup_hud, grab_cursor))
@@ -166,6 +200,51 @@ fn main() {
         )
         .add_systems(OnExit(AppState::InGame), release_cursor)
         .run();
+}
+
+/// Гарантия, что папка `assets/` видна игре.
+///
+/// Если её нет рядом с рабочей директорией (запуск не из корня проекта),
+/// пробуем перейти в папку с .exe или вверх по дереву. Иначе игра молча
+/// останется без музыки, звуков и PNG (все ассеты опциональны с тихими
+/// заглушками) - самая частая причина жалоб «нет звука в меню».
+/// Вызывается первой строкой main(), ещё до создания App.
+fn ensure_asset_root() {
+    if PathBuf::from("assets").is_dir() {
+        return;
+    }
+    // Рядом нет - кандидаты: папка с .exe и родители рабочей директории.
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.to_path_buf());
+        }
+    }
+    let mut dir = std::env::current_dir().unwrap_or_default();
+    for _ in 0..5 {
+        if !dir.pop() {
+            break;
+        }
+        candidates.push(dir.clone());
+    }
+    for candidate in candidates {
+        if candidate.join("assets").is_dir() {
+            if std::env::set_current_dir(&candidate).is_ok() {
+                // Логгера Bevy ещё нет (App не создан) - пишем в stdout напрямую.
+                println!(
+                    "No assets/ next to working dir - switched to {}",
+                    candidate.display()
+                );
+                return;
+            }
+        }
+    }
+    eprintln!(
+        "WARNING: assets/ not found (working dir: {}). Music, screamer sounds and PNG will be missing - run the game from the project root!",
+        std::env::current_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_else(|_| "?".to_string())
+    );
 }
 
 /// Run-условие «управление игрока разрешено»: мы в игре, скример не активен
@@ -195,7 +274,11 @@ fn setup_ambient_light(mut ambient_light: ResMut<AmbientLight>) {
 // ---------------------------------------------------------------------------
 
 /// Построение меню: 2D-камера + заголовок, подсказка и управление.
-fn setup_menu(mut commands: Commands, mut windows: Query<&mut Window>) {
+fn setup_menu(
+    mut commands: Commands,
+    mut windows: Query<&mut Window>,
+    settings: Res<GameSettings>,
+) {
     // В меню курсор всегда видим и свободен.
     for mut window in &mut windows {
         window.cursor_options.grab_mode = CursorGrabMode::None;
@@ -270,20 +353,69 @@ fn setup_menu(mut commands: Commands, mut windows: Query<&mut Window>) {
                 TextColor(Color::srgb(0.5, 0.12, 0.12)),
                 StateScoped(AppState::MainMenu),
             ));
+            // Настройки экрана: кнопки-переключатели (клик по ним не стартует игру).
+            parent.spawn((
+                Text::new("- SETTINGS -"),
+                TextFont {
+                    font_size: 20.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.6, 0.55, 0.55)),
+                StateScoped(AppState::MainMenu),
+            ));
+            for action in [SettingsAction::ToggleGrain, SettingsAction::ToggleVignette] {
+                parent
+                    .spawn((
+                        Button,
+                        Interaction::None,
+                        Node {
+                            padding: UiRect {
+                                left: Val::Px(28.0),
+                                right: Val::Px(28.0),
+                                top: Val::Px(10.0),
+                                bottom: Val::Px(10.0),
+                            },
+                            justify_content: JustifyContent::Center,
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(0.10, 0.05, 0.06)),
+                        action,
+                        StateScoped(AppState::MainMenu),
+                    ))
+                    .with_children(|button| {
+                        button.spawn((
+                            Text::new(setting_label(action, &settings)),
+                            TextFont {
+                                font_size: 20.0,
+                                ..default()
+                            },
+                            TextColor(Color::srgb(0.85, 0.8, 0.78)),
+                            SettingsLabel(action),
+                            StateScoped(AppState::MainMenu),
+                        ));
+                    });
+            }
         });
 }
 
-/// Вход в игру по Enter/Space/клику.
+/// Вход в игру по Enter/Space/клику (клик по кнопке настройки не стартует).
 fn menu_input(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    buttons: Query<&Interaction, With<Button>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    if keys.just_pressed(KeyCode::Enter)
-        || keys.just_pressed(KeyCode::Space)
-        || mouse.just_pressed(MouseButton::Left)
-    {
+    if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
         next_state.set(AppState::InGame);
+        return;
+    }
+    if mouse.just_pressed(MouseButton::Left) {
+        let on_button = buttons
+            .iter()
+            .any(|i| *i == Interaction::Hovered || *i == Interaction::Pressed);
+        if !on_button {
+            next_state.set(AppState::InGame);
+        }
     }
 }
 
@@ -300,6 +432,50 @@ fn blink_menu_prompt(time: Res<Time>, mut query: Query<&mut Text, With<MenuPromp
             text.0 = message.to_string();
         }
     }
+}
+
+/// Кнопки настроек в меню: подсветка при наведении + переключение по клику.
+fn settings_buttons(
+    mut settings: ResMut<GameSettings>,
+    mut buttons: Query<
+        (&Interaction, &SettingsAction, &mut BackgroundColor),
+        (Changed<Interaction>, With<Button>),
+    >,
+    mut labels: Query<(&SettingsLabel, &mut Text)>,
+) {
+    for (interaction, action, mut bg) in &mut buttons {
+        match *interaction {
+            Interaction::Pressed => {
+                match action {
+                    SettingsAction::ToggleGrain => {
+                        settings.film_grain = !settings.film_grain;
+                    }
+                    SettingsAction::ToggleVignette => {
+                        settings.vignette = !settings.vignette;
+                    }
+                }
+                for (label, mut text) in &mut labels {
+                    text.0 = setting_label(label.0, &settings);
+                }
+                bg.0 = Color::srgb(0.30, 0.12, 0.12);
+            }
+            Interaction::Hovered => {
+                bg.0 = Color::srgb(0.20, 0.09, 0.10);
+            }
+            Interaction::None => {
+                bg.0 = Color::srgb(0.10, 0.05, 0.06);
+            }
+        }
+    }
+}
+
+/// Подпись кнопки настройки: имя + текущее состояние.
+fn setting_label(action: SettingsAction, settings: &GameSettings) -> String {
+    let (name, on) = match action {
+        SettingsAction::ToggleGrain => ("FILM GRAIN", settings.film_grain),
+        SettingsAction::ToggleVignette => ("VIGNETTE", settings.vignette),
+    };
+    format!("{name}: {}", if on { "ON" } else { "OFF" })
 }
 
 // ---------------------------------------------------------------------------
@@ -628,7 +804,11 @@ fn spawn_fragment(
 /// Построение HUD: виньетка безумия, маленькая тусклая полоска стамины
 /// и кино-оверлеи (виньетка + зерно плёнки). Никаких подсказок, прицела
 /// и счётчиков - только стамина. Всё удаляется автоматически при выходе.
-fn setup_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+fn setup_hud(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    settings: Res<GameSettings>,
+) {
     // Виньетка безумия - первой, чтобы лежать ПОД остальным HUD.
     commands.spawn((
         Node {
@@ -691,7 +871,7 @@ fn setup_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         });
 
     // Постоянная тёмная виньетка + зерно плёнки поверх остального HUD.
-    atmosphere::spawn_cinematic_overlays(&mut commands, &mut images);
+    atmosphere::spawn_cinematic_overlays(&mut commands, &mut images, &settings);
 }
 
 // ---------------------------------------------------------------------------

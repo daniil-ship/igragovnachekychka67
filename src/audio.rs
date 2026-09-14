@@ -52,6 +52,13 @@ pub fn asset_exists(relative_path: &str) -> bool {
     Path::new("assets").join(relative_path).exists()
 }
 
+/// Рабочая директория строкой для диагностики («нет звука» = не та папка).
+fn current_dir_display() -> String {
+    std::env::current_dir()
+        .map(|d| d.display().to_string())
+        .unwrap_or_else(|_| "?".to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Ресурс-режиссёр
 // ---------------------------------------------------------------------------
@@ -65,6 +72,8 @@ struct AudioDirector {
     menu_level: f32,
     /// Меню-музыка сейчас гаснет (мы ушли в игру).
     menu_fading_out: bool,
+    /// В консоль уже писали, что меню-музыка слышна (чтобы не спамить).
+    menu_announced: bool,
     /// Сущность с текущим треком амбиента (если играет).
     ambient_entity: Option<Entity>,
     /// Индекс следующего трека амбиента в [`AMBIENT_TRACKS`].
@@ -85,6 +94,7 @@ impl Default for AudioDirector {
             menu_entity: None,
             menu_level: 0.0,
             menu_fading_out: false,
+            menu_announced: false,
             ambient_entity: None,
             ambient_index: 0,
             ambient_level: 0.0,
@@ -177,10 +187,14 @@ fn start_menu_music(
     if director.menu_entity.is_none() {
         director.menu_entity = spawn_menu_music(&mut commands, &assets);
         director.menu_level = 0.0;
+        director.menu_announced = false;
         if director.menu_entity.is_some() {
             info!("Menu music started: {MENU_MUSIC}");
         } else {
-            info!("{MENU_MUSIC} not found - running silent (will retry automatically)");
+            warn!(
+                "{MENU_MUSIC} not found (working dir: {}) - menu will be silent (will retry automatically)",
+                current_dir_display()
+            );
         }
     }
 }
@@ -201,6 +215,7 @@ fn retry_menu_music(
     if director.retry.just_finished() {
         director.menu_entity = spawn_menu_music(&mut commands, &assets);
         director.menu_level = 0.0;
+        director.menu_announced = false;
     }
 }
 
@@ -226,6 +241,11 @@ fn update_menu_music(
         director.menu_level = (director.menu_level + dt / FADE_IN_SECS).min(1.0);
     }
     sink.set_volume(Volume::Linear(MENU_VOLUME * director.menu_level));
+    // Подтверждение в консоль, что музыка реально слышна (диагностика «нет звука»).
+    if !director.menu_announced && director.menu_level >= 1.0 {
+        director.menu_announced = true;
+        info!("Menu music playing at full volume");
+    }
     if director.menu_fading_out && director.menu_level <= 0.0 {
         commands.entity(entity).despawn();
         director.menu_entity = None;
@@ -253,7 +273,10 @@ fn begin_game_audio(
         if director.ambient_entity.is_some() {
             info!("Ambient cycle started");
         } else {
-            info!("Ambient files not found - running silent (will retry automatically)");
+            warn!(
+                "Ambient files not found (working dir: {}) - game will be silent (will retry automatically)",
+                current_dir_display()
+            );
         }
     }
 }

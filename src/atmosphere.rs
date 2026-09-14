@@ -12,7 +12,7 @@ use bevy::state::state_scoped::StateScoped;
 use rand::Rng;
 
 use crate::player::Player;
-use crate::{AppState, WALL_H};
+use crate::{AppState, GameSettings, WALL_H};
 
 // ---------------------------------------------------------------------------
 // Константы баланса
@@ -425,37 +425,45 @@ fn spawn_dust(commands: &mut Commands, kit: &LampKit, base: Vec3) {
 
 /// Постоянные оверлеи поверх HUD: тёмная виньетка по краям + зерно плёнки.
 /// Зерно - несколько предрасчитанных кадров, видимый переключается таймером.
-/// Вызывается из `setup_hud`.
+/// Оба оверлея отключаются в настройках меню. Вызывается из `setup_hud`.
 pub(crate) fn spawn_cinematic_overlays(
     commands: &mut Commands,
     images: &mut ResMut<Assets<Image>>,
+    settings: &GameSettings,
 ) {
-    commands.spawn((
-        Node {
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            ..default()
-        },
-        ImageNode::new(images.add(crate::textures::build_vignette_texture())),
-        StateScoped(AppState::InGame),
-    ));
-    let mut frames = Vec::with_capacity(GRAIN_FRAMES);
-    for i in 0..GRAIN_FRAMES {
-        let entity = commands
-            .spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    height: Val::Percent(100.0),
-                    ..default()
-                },
-                ImageNode::new(images.add(crate::textures::build_grain_frame(i as i32))),
-                Visibility::Hidden,
-                StateScoped(AppState::InGame),
-            ))
-            .id();
-        frames.push(entity);
+    // Виньетка - только если включена в настройках.
+    if settings.vignette {
+        commands.spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            ImageNode::new(images.add(crate::textures::build_vignette_texture())),
+            StateScoped(AppState::InGame),
+        ));
     }
-    commands.entity(frames[0]).insert(Visibility::Visible);
+    // Зерно - только если включено; ресурс сбрасываем всегда, чтобы после
+    // выключения не осталось «висячих» сущностей от прошлого забега.
+    let mut frames = Vec::with_capacity(GRAIN_FRAMES);
+    if settings.film_grain {
+        for i in 0..GRAIN_FRAMES {
+            let entity = commands
+                .spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                    ImageNode::new(images.add(crate::textures::build_grain_frame(i as i32))),
+                    Visibility::Hidden,
+                    StateScoped(AppState::InGame),
+                ))
+                .id();
+            frames.push(entity);
+        }
+        commands.entity(frames[0]).insert(Visibility::Visible);
+    }
     commands.insert_resource(GrainFrames {
         frames,
         idx: 0,
