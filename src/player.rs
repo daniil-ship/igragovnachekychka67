@@ -7,6 +7,7 @@
 
 use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
+use rand::Rng;
 
 use crate::hallucinations::Insanity;
 use crate::{GameProgress, LevelColliders};
@@ -233,9 +234,12 @@ fn move_with_collision(
 /// - Если стамина `<= 0.0`, но игрок **продолжает** держать `Shift` и
 ///   двигаться, поднимается флаг [`ForcedRun`] - принудительный бег.
 ///   Скорость при этом не падает, но безумие начинает расти.
+/// - В момент истощения стамины - бросок 25% на смерть (экран "YOU DIED").
 fn stamina_system(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+    mut progress: ResMut<GameProgress>,
     mut query: Query<(&mut Stamina, &mut ForcedRun)>,
 ) {
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -252,6 +256,7 @@ fn stamina_system(
     let dt = time.delta_secs();
 
     for (mut stamina, mut forced) in &mut query {
+        let had_stamina = stamina.current > 0.0;
         if wants_run && stamina.current > 0.0 {
             stamina.current = (stamina.current - Stamina::DRAIN_PER_SEC * dt).max(0.0);
         } else if !wants_run {
@@ -261,6 +266,16 @@ fn stamina_system(
                 Stamina::REGEN_IDLE_PER_SEC
             };
             stamina.current = (stamina.current + rate * dt).min(Stamina::MAX);
+        }
+        // В момент, когда стамина кончается, - бросок 25% на смерть.
+        // Крутится один раз за истощение (по переходу >0 -> 0), не каждый кадр.
+        if !progress.won && !progress.dead && had_stamina && stamina.current <= 0.0 {
+            let mut rng = rand::thread_rng();
+            if rng.gen_bool(0.25) {
+                progress.dead = true;
+                crate::spawn_death_overlay(&mut commands);
+                info!("Your heart gave out in the dark...");
+            }
         }
         // Принудительный бег: Shift + движение при пустой стамине.
         forced.0 = wants_run && stamina.current <= 0.0;

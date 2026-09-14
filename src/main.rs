@@ -11,6 +11,7 @@
 mod audio;
 mod hallucinations;
 mod player;
+mod shadow;
 mod textures;
 
 use audio::AudioDirectorPlugin;
@@ -24,6 +25,7 @@ use player::{
 };
 use rand::seq::SliceRandom;
 use rand::Rng;
+use shadow::ShadowPlugin;
 
 // ---------------------------------------------------------------------------
 // Константы мира
@@ -40,6 +42,12 @@ const MAZE_H: usize = 15;
 pub const FRAGMENT_COUNT: usize = 5;
 /// Дистанция сбора фрагмента (по горизонтали), метры.
 const PICKUP_RADIUS: f32 = 1.5;
+/// PNG-текстуры заброшки (пути внутри `assets/`). Если файла нет -
+/// используется процедурная текстура из [`textures`].
+pub const TEX_WALL_A: &str = "textures/wall1.png";
+pub const TEX_WALL_B: &str = "textures/wall2.png";
+pub const TEX_FLOOR: &str = "textures/floor.png";
+pub const TEX_CEIL: &str = "textures/ceil.png";
 
 // ---------------------------------------------------------------------------
 // Состояния, ресурсы, компоненты уровня
@@ -76,6 +84,8 @@ pub struct GameProgress {
     pub collected: u32,
     pub total: u32,
     pub won: bool,
+    /// Герой мёртв (25% в момент истощения стамины).
+    pub dead: bool,
     /// Точки спавна фрагментов (для рестарта клавишей R).
     pub fragment_spots: Vec<Vec3>,
 }
@@ -86,6 +96,7 @@ impl Default for GameProgress {
             collected: 0,
             total: FRAGMENT_COUNT as u32,
             won: false,
+            dead: false,
             fragment_spots: Vec::new(),
         }
     }
@@ -98,6 +109,10 @@ struct EchoFragment;
 /// Маркер оверлея победы (для удаления при рестарте).
 #[derive(Component)]
 struct WinOverlay;
+
+/// Маркер оверлея смерти (для удаления при рестарте).
+#[derive(Component)]
+struct DeathOverlay;
 
 /// Маркер мигающей подсказки в меню.
 #[derive(Component)]
@@ -125,7 +140,12 @@ fn main() {
         // В Bevy 0.16 state-scoped сущности включаются явно,
         // иначе маркеры StateScoped не будут ничего удалять.
         .enable_state_scoped_entities::<AppState>()
-        .add_plugins((PlayerPlugin, AudioDirectorPlugin, HallucinationsPlugin))
+        .add_plugins((
+            PlayerPlugin,
+            AudioDirectorPlugin,
+            HallucinationsPlugin,
+            ShadowPlugin,
+        ))
         // Холодный тусклый свет окружения.
         .add_systems(Startup, setup_ambient_light)
         // Главное меню.
@@ -138,7 +158,7 @@ fn main() {
         .add_systems(OnEnter(AppState::InGame), (generate_level, setup_hud, grab_cursor))
         .add_systems(
             Update,
-            (collect_fragments, win_input, escape_to_menu, bob_fragments)
+            (collect_fragments, restart_input, escape_to_menu, bob_fragments)
                 .run_if(in_state(AppState::InGame)),
         )
         .add_systems(OnExit(AppState::InGame), release_cursor)
@@ -152,7 +172,7 @@ pub fn game_input_allowed(
     screamer: Res<ScreamerState>,
     progress: Res<GameProgress>,
 ) -> bool {
-    *state.get() == AppState::InGame && !screamer.active && !progress.won
+    *state.get() == AppState::InGame && !screamer.active && !progress.won && !progress.dead
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +375,21 @@ fn generate_maze(w: usize, h: usize) -> Vec<Vec<bool>> {
     wall
 }
 
+/// PNG-текстура из assets или процедурная заглушка, если файла нет на диске.
+fn texture_or_fallback(
+    assets: &AssetServer,
+    images: &mut ResMut<Assets<Image>>,
+    path: &str,
+    fallback: fn() -> Image,
+) -> Handle<Image> {
+    if crate::audio::asset_exists(path) {
+        assets.load(path)
+    } else {
+        info!("{path} not found - using procedural fallback texture");
+        images.add(fallback())
+    }
+}
+
 /// Построение уровня при входе в игру: пол, потолок, стены, игрок с
 /// фонариком и 5 фрагментов эха в дальних клетках. Каждый забег - новый
 /// случайный лабиринт.
@@ -363,6 +398,7 @@ fn generate_level(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    assets: Res<AssetServer>,
     mut colliders: ResMut<LevelColliders>,
     mut progress: ResMut<GameProgress>,
 ) {
@@ -370,15 +406,21 @@ fn generate_level(
     colliders.walls.clear();
     progress.collected = 0;
     progress.won = false;
+    progress.dead = false;
     progress.total = FRAGMENT_COUNT as u32;
     progress.fragment_spots.clear();
 
     let maze = generate_maze(MAZE_W, MAZE_H);
 
-    // Процедурные текстуры (генерируются один раз на уровень).
-    let wall_tex = images.add(textures::build_wall_texture());
-    let floor_tex = images.add(textures::build_floor_texture());
-    let ceil_tex = images.add(textures::build_ceiling_texture());
+    // Текстуры заброшки: PNG из assets (или процедурные, если файлов нет).
+    let wall_tex_a =
+        texture_or_fallback(&assets, &mut images, TEX_WALL_A, textures::build_wall_texture);
+    let wall_tex_b =
+        texture_or_fallback(&assets, &mut images, TEX_WALL_B, textures::build_wall_texture);
+    let floor_tex =
+        texture_or_fallback(&assets, &mut images, TEX_FLOOR, textures::build_floor_texture);
+    let ceil_tex =
+        texture_or_fallback(&assets, &mut images, TEX_CEIL, textures::build_ceiling_texture);
 
     // Общие материалы. base_color умножается на текстуру и работает оттенком.
     let floor_mat = materials.add(StandardMaterial {
@@ -395,13 +437,13 @@ fn generate_level(
     });
     let wall_mat_a = materials.add(StandardMaterial {
         base_color: Color::srgb(0.85, 0.83, 0.88),
-        base_color_texture: Some(wall_tex.clone()),
+        base_color_texture: Some(wall_tex_a),
         perceptual_roughness: 0.9,
         ..default()
     });
     let wall_mat_b = materials.add(StandardMaterial {
         base_color: Color::srgb(0.6, 0.58, 0.63),
-        base_color_texture: Some(wall_tex),
+        base_color_texture: Some(wall_tex_b),
         perceptual_roughness: 0.9,
         ..default()
     });
@@ -718,7 +760,7 @@ fn collect_fragments(
     fragments: Query<(Entity, &Transform), With<EchoFragment>>,
     mut progress: ResMut<GameProgress>,
 ) {
-    if progress.won {
+    if progress.won || progress.dead {
         return;
     }
     for player in &players {
@@ -808,22 +850,93 @@ fn reset_screamer_state(mut screamer: ResMut<ScreamerState>) {
     screamer.full_reset();
 }
 
-/// Рестарт забега клавишей R после победы: убираем оверлей, возвращаем
-/// фрагменты на места, сбрасываем стамину/безумие/скримеры.
-fn win_input(
+/// Оверлей смерти: красное затемнение + табличка "YOU DIED".
+/// Вызывается из системы стамины в момент смертельного истощения.
+fn spawn_death_overlay(commands: &mut Commands) {
+    commands
+        .spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.25, 0.0, 0.0, 0.55)),
+            DeathOverlay,
+            StateScoped(AppState::InGame),
+        ))
+        .with_children(|parent| {
+            parent
+                .spawn((
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        row_gap: Val::Px(14.0),
+                        padding: UiRect {
+                            left: Val::Px(56.0),
+                            right: Val::Px(56.0),
+                            top: Val::Px(40.0),
+                            bottom: Val::Px(40.0),
+                        },
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.05, 0.01, 0.01)),
+                    DeathOverlay,
+                    StateScoped(AppState::InGame),
+                ))
+                .with_children(|panel| {
+                    panel.spawn((
+                        Text::new("YOU DIED"),
+                        TextFont {
+                            font_size: 64.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.8, 0.05, 0.05)),
+                        DeathOverlay,
+                        StateScoped(AppState::InGame),
+                    ));
+                    panel.spawn((
+                        Text::new("YOUR HEART GAVE OUT IN THE DARK"),
+                        TextFont {
+                            font_size: 22.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.6, 0.5, 0.5)),
+                        DeathOverlay,
+                        StateScoped(AppState::InGame),
+                    ));
+                    panel.spawn((
+                        Text::new("R - TRY AGAIN      ESC - MENU"),
+                        TextFont {
+                            font_size: 24.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.55, 0.55, 0.6)),
+                        DeathOverlay,
+                        StateScoped(AppState::InGame),
+                    ));
+                });
+        });
+}
+
+/// Рестарт забега клавишей R после победы или смерти: убираем оверлеи,
+/// возвращаем фрагменты на места, сбрасываем стамину/безумие/скримеры.
+fn restart_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     overlays: Query<Entity, With<WinOverlay>>,
     screamer_overlays: Query<Entity, With<ScreamerOverlay>>,
+    death_overlays: Query<Entity, With<DeathOverlay>>,
     mut progress: ResMut<GameProgress>,
     mut screamer: ResMut<ScreamerState>,
     mut stamina_query: Query<&mut Stamina>,
     mut insanity_query: Query<&mut Insanity>,
     mut forced_query: Query<&mut ForcedRun>,
 ) {
-    if !progress.won || !keys.just_pressed(KeyCode::KeyR) {
+    if !(progress.won || progress.dead) || !keys.just_pressed(KeyCode::KeyR) {
         return;
     }
     for entity in &overlays {
@@ -834,8 +947,12 @@ fn win_input(
     for entity in &screamer_overlays {
         commands.entity(entity).despawn();
     }
+    for entity in &death_overlays {
+        commands.entity(entity).despawn();
+    }
     progress.collected = 0;
     progress.won = false;
+    progress.dead = false;
     for spot in progress.fragment_spots.clone() {
         spawn_fragment(&mut commands, &mut meshes, &mut materials, spot);
     }

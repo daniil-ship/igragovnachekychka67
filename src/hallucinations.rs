@@ -11,6 +11,8 @@
 //!    рендерится поверх всего (`Timer::from_seconds(1.0, TimerMode::Once)`),
 //!    звук орёт на максимальной громкости, управление заблокировано.
 //!    Всего пар 6, дважды подряд одна и та же не выпадает (антиповтор).
+//!    Половина срабатываний - 3D-режим: вместо картинки прямо перед игроком
+//!    появляется чёрная тень и бросается в лицо (см. [`crate::shadow`]).
 //! 4. Через секунду сущность картинки удаляется (`despawn`), безумие
 //!    сбрасывается, игра продолжается.
 //!
@@ -26,7 +28,8 @@ use rand::Rng;
 
 use crate::audio::asset_exists;
 use crate::player::{ForcedRun, Player, Stamina};
-use crate::AppState;
+use crate::shadow::{spawn_shadow, ShadowLunge};
+use crate::{AppState, GameProgress, LevelColliders, WallAabb};
 
 // ---------------------------------------------------------------------------
 // Константы
@@ -152,16 +155,21 @@ fn update_madness(
     time: Res<Time>,
     mut commands: Commands,
     assets: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    colliders: Res<LevelColliders>,
+    progress: Res<GameProgress>,
     mut state: ResMut<ScreamerState>,
-    mut player_query: Query<(&ForcedRun, &mut Insanity)>,
+    mut lunge: ResMut<ShadowLunge>,
+    mut player_query: Query<(&ForcedRun, &Player, &Transform, &mut Insanity)>,
 ) {
     let dt = time.delta_secs();
     state.cooldown = (state.cooldown - dt).max(0.0);
-    if state.active {
+    if state.active || progress.dead {
         return;
     }
 
-    for (forced, mut insanity) in &mut player_query {
+    for (forced, player, transform, mut insanity) in &mut player_query {
         if forced.0 && state.cooldown <= 0.0 {
             // 1) Безумие копится, пока герой бежит из последних сил.
             insanity.0 = (insanity.0 + INSANITY_GAIN_PER_SEC * dt).min(INSANITY_THRESHOLD);
@@ -181,7 +189,17 @@ fn update_madness(
 
             // 3) Триггер: порог безумия ИЛИ случайный таймер.
             if insanity.0 >= INSANITY_THRESHOLD || time_up {
-                fire_screamer(&mut commands, &assets, &mut state);
+                fire_screamer(
+                    &mut commands,
+                    &assets,
+                    &mut meshes,
+                    &mut materials,
+                    &mut state,
+                    &mut lunge,
+                    transform.translation,
+                    player.yaw,
+                    &colliders.walls,
+                );
                 state.random_trigger = None;
             }
         } else {
@@ -197,10 +215,18 @@ fn update_madness(
 fn fire_screamer(
     commands: &mut Commands,
     assets: &AssetServer,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
     state: &mut ScreamerState,
+    lunge: &mut ShadowLunge,
+    player_pos: Vec3,
+    yaw: f32,
+    walls: &[WallAabb],
 ) {
     // Случайная пара с одинаковым индексом: skrimerN.png + screamN.mp3.
     let mut rng = rand::thread_rng();
+    // Режим: 3D-тень бросается в лицо (50%) или fullscreen-PNG (50%).
+    let shadow_mode = rng.gen_bool(0.5);
     // Случайная пара, но не та же, что в прошлый раз (антиповтор).
     let index = loop {
         let candidate = rng.gen_range(0..SCREAMER_IMAGES.len());
@@ -218,7 +244,11 @@ fn fire_screamer(
         height: Val::Percent(100.0),
         ..default()
     };
-    if asset_exists(image_path) {
+    if shadow_mode {
+        // --- 3D-скример: чёрная тварь прямо перед игроком ---
+        // Fullscreen-картинку не показываем, чтобы тварь было видно.
+        spawn_shadow(commands, meshes, materials, lunge, player_pos, yaw, walls);
+    } else if asset_exists(image_path) {
         let handle: Handle<Image> = assets.load(image_path);
         commands.spawn((
             fullscreen,
@@ -255,7 +285,11 @@ fn fire_screamer(
     state.active = true;
     state.last_index = Some(index);
     state.timer = Timer::from_seconds(SCREAMER_DURATION_SECS, TimerMode::Once);
-    info!("SCREAMER! (pair #{})", index + 1);
+    info!(
+        "SCREAMER! (pair #{}, {})",
+        index + 1,
+        if shadow_mode { "3D shadow" } else { "fullscreen" }
+    );
 }
 
 /// Тиканье активного скримера: мигание заглушки, тряска камеры и -
