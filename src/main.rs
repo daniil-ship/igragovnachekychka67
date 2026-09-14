@@ -14,8 +14,9 @@ mod player;
 
 use audio::AudioDirectorPlugin;
 use bevy::prelude::*;
+use bevy::state::state_scoped::DespawnOnExit;
 use bevy::window::{CursorGrabMode, WindowPlugin, WindowResolution};
-use hallucinations::{HallucinationsPlugin, Insanity, ScreamerState};
+use hallucinations::{HallucinationsPlugin, Insanity, ScreamerOverlay, ScreamerState};
 use player::{
     Flashlight, ForcedRun, FragmentCounterText, InsanityVignette, Player, PlayerPlugin, Stamina,
     StaminaFill, WarningText,
