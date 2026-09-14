@@ -1,0 +1,10 @@
+# Сборка Rust
+/target/
+**/*.rs.bk
+
+# Мусор ОС/редакторов
+.DS_Store
+*~
+*.swp
+.idea/
+.vscode/

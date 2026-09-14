@@ -1,0 +1,17 @@
+[package]
+name = "echo-of-forgotten-walls"
+version = "0.1.0"
+edition = "2021"
+description = "«Эхо Забытых Стен» — психологический хоррор от первого лица на движке Bevy"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Bevy 0.16. Фича `mp3` включает декодер MP3 (через symphonia) —
+# без неё файлы menu.mp3 / ambient*.mp3 / scream*.mp3 не загрузятся.
+# (По умолчанию Bevy умеет только OGG/Vorbis.)
+bevy = { version = "0.16", features = ["mp3"] }
+# Случайные числа: выбор пары скримеров, процедурный лабиринт, мерцание.
+rand = "0.8"
+
+[profile.release]
+opt-level = 3
