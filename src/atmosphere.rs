@@ -35,13 +35,13 @@ const LAMP_GLOW_ALPHA: f32 = 0.5;
 /// Размер гало-спрайта, метры.
 const LAMP_GLOW_SIZE: f32 = 1.6;
 /// Шанс, что лампа разбита: тёмная, висит криво, света нет.
-const BROKEN_CHANCE: f32 = 0.15;
+const BROKEN_CHANCE: f64 = 0.15;
 /// Шанс, что рабочая лампа - неисправная (мигает).
-const FLICKER_CHANCE: f32 = 0.30;
+const FLICKER_CHANCE: f64 = 0.30;
 /// Сколько тёмных зон (прямоугольников вообще без ламп) на уровень.
 const DARK_ZONE_COUNT: usize = 2;
 /// Шанс, что в тёмной зоне всё же висит разбитый плафон (для вида).
-const DARK_ZONE_FIXTURE_CHANCE: f32 = 0.55;
+const DARK_ZONE_FIXTURE_CHANCE: f64 = 0.55;
 /// Пылинок возле каждой рабочей лампы.
 const DUST_PER_LAMP: usize = 6;
 /// Кадров зерна плёнки и длительность каждого.
@@ -503,10 +503,10 @@ fn flicker_lamps(
         let shimmer = 0.96 + 0.04 * (t * 43.0 + lamp.phase).sin();
         let m = (lamp.level * shimmer).clamp(0.0, 1.0);
         for child in children.iter() {
-            if let Ok(mut light) = lights.get_mut(*child) {
+            if let Ok(mut light) = lights.get_mut(child) {
                 light.intensity = lamp.base_intensity * m;
             }
-            if let Ok(bulb) = bulb_mats.get(*child) {
+            if let Ok(bulb) = bulb_mats.get(child) {
                 if let Some(mat) = materials.get_mut(&bulb.0) {
                     mat.base_color = Color::srgb(
                         lamp.bulb_rgb.x * m,
@@ -515,7 +515,7 @@ fn flicker_lamps(
                     );
                 }
             }
-            if let Ok(glow) = glow_mats.get(*child) {
+            if let Ok(glow) = glow_mats.get(child) {
                 if let Some(mat) = materials.get_mut(&glow.0) {
                     mat.base_color = Color::srgba(
                         lamp.glow_rgb.x * m,
