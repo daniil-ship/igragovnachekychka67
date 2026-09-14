@@ -50,16 +50,23 @@ sudo apt install pkg-config libasound2-dev libudev-dev libxkbcommon-x11-0
 │   │   ├── ambient2.mp3     # фоновый амбиент 2
 │   │   ├── scream1.mp3      # звук скримера 1
 │   │   ├── scream2.mp3      # звук скримера 2
-│   │   └── scream3.mp3      # звук скримера 3
+│   │   ├── scream3.mp3      # звук скримера 3
+│   │   ├── scream4.mp3      # звук скримера 4
+│   │   ├── scream5.mp3      # звук скримера 5
+│   │   └── scream6.mp3      # звук скримера 6
 │   └── screamers/
 │       ├── skrimer1.png     # изображение скримера 1
 │       ├── skrimer2.png     # изображение скримера 2
-│       └── skrimer3.png     # изображение скримера 3
+│       ├── skrimer3.png     # изображение скримера 3
+│       ├── skrimer4.png     # изображение скримера 4
+│       ├── skrimer5.png     # изображение скримера 5
+│       └── skrimer6.png     # изображение скримера 6
 ├── src/
 │   ├── main.rs              # состояния, меню, лабиринт, HUD, победа
 │   ├── player.rs            # движение, стамина, фонарик
 │   ├── audio.rs             # музыка, кроссфейд амбиента
-│   └── hallucinations.rs    # безумие, таймеры, скримеры
+│   ├── hallucinations.rs    # безумие, таймеры, скримеры
+│   └── textures.rs          # процедурные текстуры стен/пола/потолка
 └── Cargo.toml               # bevy 0.16 + фича "mp3", rand 0.8
 ```
 
@@ -76,6 +83,8 @@ sudo apt install pkg-config libasound2-dev libudev-dev libxkbcommon-x11-0
 
 Пары связаны индексом: сработавший скример №2 покажет `skrimer2.png`
 и проиграет `scream2.mp3`.
+
+Всего пар: 6, дважды подряд одна и та же не выпадает (антиповтор).
 
 **Важно:** все файлы опциональны. Если каких-то нет:
 
@@ -107,7 +116,7 @@ sudo apt install pkg-config libasound2-dev libudev-dev libxkbcommon-x11-0
 плавные затухания, без обрывов.
 
 **Мир** (`src/main.rs`): каждый забег — новый случайный лабиринт 21×15
-(backtracker + «заплетение» тупиков в петли), 5 светящихся фрагментов
+(backtracker + «заплетение» тупиков в петли), процедурные текстуры бетона/плитки/панелей, 5 светящихся фрагментов
 в дальних клетках, AABB-коллизии, спотлайт-фонарик с мерцанием от безумия.
 
 ## Настройка баланса
@@ -118,4 +127,5 @@ sudo apt install pkg-config libasound2-dev libudev-dev libxkbcommon-x11-0
 - `src/hallucinations.rs`: `INSANITY_THRESHOLD`, `INSANITY_GAIN_PER_SEC`,
   `RANDOM_TRIGGER_*`, `TRIGGER_COOLDOWN_SECS`, `SCREAMER_DURATION_SECS`;
 - `src/audio.rs`: `MENU_VOLUME`, `AMBIENT_VOLUME`, `FADE_*_SECS`;
-- `src/main.rs`: `MAZE_W/H`, `FRAGMENT_COUNT`, `CELL`, `WALL_H`.
+- `src/main.rs`: `MAZE_W/H`, `FRAGMENT_COUNT`, `CELL`, `WALL_H`;
+- `src/textures.rs`: разрешение текстур и плотность шума/пятен.

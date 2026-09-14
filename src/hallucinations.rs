@@ -10,6 +10,7 @@
 //!    (`skrimerN.png` + `screamN.mp3`), картинка на **ровно 1 секунду**
 //!    рендерится поверх всего (`Timer::from_seconds(1.0, TimerMode::Once)`),
 //!    звук орёт на максимальной громкости, управление заблокировано.
+//!    Всего пар 6, дважды подряд одна и та же не выпадает (антиповтор).
 //! 4. Через секунду сущность картинки удаляется (`despawn`), безумие
 //!    сбрасывается, игра продолжается.
 //!
@@ -32,16 +33,22 @@ use crate::AppState;
 // ---------------------------------------------------------------------------
 
 /// Картинки скриммеров (пути внутри `assets/`). Индекс связан со звуком.
-pub const SCREAMER_IMAGES: [&str; 3] = [
+pub const SCREAMER_IMAGES: [&str; 6] = [
     "screamers/skrimer1.png",
     "screamers/skrimer2.png",
     "screamers/skrimer3.png",
+    "screamers/skrimer4.png",
+    "screamers/skrimer5.png",
+    "screamers/skrimer6.png",
 ];
 /// Звуки скриммеров (пути внутри `assets/`). Индекс связан с картинкой.
-pub const SCREAMER_SOUNDS: [&str; 3] = [
+pub const SCREAMER_SOUNDS: [&str; 6] = [
     "audio/scream1.mp3",
     "audio/scream2.mp3",
     "audio/scream3.mp3",
+    "audio/scream4.mp3",
+    "audio/scream5.mp3",
+    "audio/scream6.mp3",
 ];
 
 /// Критический порог безумия: при достижении срабатывает скример.
@@ -90,6 +97,8 @@ pub struct ScreamerState {
     /// Случайный таймер: срабатывает, если принудительный бег длится
     /// достаточно долго (пересоздаётся при каждом новом забеге).
     random_trigger: Option<Timer>,
+    /// Индекс прошлой пары (антиповтор: дважды подряд не выпадает).
+    last_index: Option<usize>,
 }
 
 impl Default for ScreamerState {
@@ -99,6 +108,7 @@ impl Default for ScreamerState {
             timer: Timer::from_seconds(SCREAMER_DURATION_SECS, TimerMode::Once),
             cooldown: 0.0,
             random_trigger: None,
+            last_index: None,
         }
     }
 }
@@ -109,6 +119,7 @@ impl ScreamerState {
         self.active = false;
         self.cooldown = 0.0;
         self.random_trigger = None;
+        self.last_index = None;
     }
 }
 
@@ -190,7 +201,13 @@ fn fire_screamer(
 ) {
     // Случайная пара с одинаковым индексом: skrimerN.png + screamN.mp3.
     let mut rng = rand::thread_rng();
-    let index = rng.gen_range(0..SCREAMER_IMAGES.len());
+    // Случайная пара, но не та же, что в прошлый раз (антиповтор).
+    let index = loop {
+        let candidate = rng.gen_range(0..SCREAMER_IMAGES.len());
+        if Some(candidate) != state.last_index {
+            break candidate;
+        }
+    };
     let image_path = SCREAMER_IMAGES[index];
     let sound_path = SCREAMER_SOUNDS[index];
 
@@ -236,6 +253,7 @@ fn fire_screamer(
 
     // --- Запуск таймера ровно на 1 секунду ---
     state.active = true;
+    state.last_index = Some(index);
     state.timer = Timer::from_seconds(SCREAMER_DURATION_SECS, TimerMode::Once);
     info!("SCREAMER! (pair #{})", index + 1);
 }

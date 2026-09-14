@@ -11,6 +11,7 @@
 mod audio;
 mod hallucinations;
 mod player;
+mod textures;
 
 use audio::AudioDirectorPlugin;
 use bevy::prelude::*;
@@ -361,6 +362,7 @@ fn generate_level(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     mut colliders: ResMut<LevelColliders>,
     mut progress: ResMut<GameProgress>,
 ) {
@@ -373,47 +375,57 @@ fn generate_level(
 
     let maze = generate_maze(MAZE_W, MAZE_H);
 
-    // Общие материалы (создаём один раз на уровень).
+    // Процедурные текстуры (генерируются один раз на уровень).
+    let wall_tex = images.add(textures::build_wall_texture());
+    let floor_tex = images.add(textures::build_floor_texture());
+    let ceil_tex = images.add(textures::build_ceiling_texture());
+
+    // Общие материалы. base_color умножается на текстуру и работает оттенком.
     let floor_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.09, 0.09, 0.11),
+        base_color: Color::srgb(1.0, 1.0, 1.0),
+        base_color_texture: Some(floor_tex),
+        perceptual_roughness: 0.95,
+        ..default()
+    });
+    let ceil_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 1.0, 1.0),
+        base_color_texture: Some(ceil_tex),
         perceptual_roughness: 0.95,
         ..default()
     });
     let wall_mat_a = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.16, 0.15, 0.17),
+        base_color: Color::srgb(0.85, 0.83, 0.88),
+        base_color_texture: Some(wall_tex.clone()),
         perceptual_roughness: 0.9,
         ..default()
     });
     let wall_mat_b = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.12, 0.11, 0.13),
+        base_color: Color::srgb(0.6, 0.58, 0.63),
+        base_color_texture: Some(wall_tex),
         perceptual_roughness: 0.9,
         ..default()
     });
 
-    let world_w = MAZE_W as f32 * CELL;
-    let world_d = MAZE_H as f32 * CELL;
-
-    // Пол и потолок - две плиты на всю карту.
-    commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(world_w, 0.2, world_d))),
-        MeshMaterial3d(floor_mat.clone()),
-        Transform::from_xyz(0.0, -0.1, 0.0),
-        StateScoped(AppState::InGame),
-    ));
-    commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(world_w, 0.2, world_d))),
-        MeshMaterial3d(floor_mat),
-        Transform::from_xyz(0.0, WALL_H + 0.1, 0.0),
-        StateScoped(AppState::InGame),
-    ));
-
     // Стены: по кубу на каждую клетку-стену + коллайдер.
+    // Пол и потолок: по плите на каждую клетку пола, чтобы текстура не тянулась.
     for (cy, row) in maze.iter().enumerate() {
         for (cx, &is_wall) in row.iter().enumerate() {
+            let (x, z) = cell_center(cx, cy);
             if !is_wall {
+                commands.spawn((
+                    Mesh3d(meshes.add(Cuboid::new(CELL, 0.2, CELL))),
+                    MeshMaterial3d(floor_mat.clone()),
+                    Transform::from_xyz(x, -0.1, z),
+                    StateScoped(AppState::InGame),
+                ));
+                commands.spawn((
+                    Mesh3d(meshes.add(Cuboid::new(CELL, 0.2, CELL))),
+                    MeshMaterial3d(ceil_mat.clone()),
+                    Transform::from_xyz(x, WALL_H + 0.1, z),
+                    StateScoped(AppState::InGame),
+                ));
                 continue;
             }
-            let (x, z) = cell_center(cx, cy);
             let mat = if (cx + cy) % 2 == 0 {
                 wall_mat_a.clone()
             } else {
