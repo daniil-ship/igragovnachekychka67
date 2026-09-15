@@ -3,16 +3,17 @@
 //! Модуль отвечает за «реалистичность» картинки:
 //! - [`spawn_lamps`] расставляет по лабиринту светильники: рабочие, мигающие
 //!   и разбитые, а также выбирает тёмные зоны, где света нет вообще;
-//! - [`spawn_cinematic_overlays`] добавляет постоянную виньетку и зерно плёнки;
+//! - зерно плёнки и виньетка теперь в WGSL-шейдере ([`postfx`](crate::postfx));
 //! - системы мерцания ламп, billboard-гало, дрейфа пыли и смены кадров зерна
 //!   оживляют всё это каждый кадр.
 
 use bevy::prelude::*;
 use bevy::state::state_scoped::StateScoped;
+use rand::rngs::StdRng;
 use rand::Rng;
 
 use crate::player::Player;
-use crate::{GameState, GameSettings, WALL_H};
+use crate::{GameState, WALL_H};
 
 // ---------------------------------------------------------------------------
 // Константы баланса
@@ -45,8 +46,6 @@ const DARK_ZONE_FIXTURE_CHANCE: f64 = 0.55;
 /// Пылинок возле каждой рабочей лампы.
 const DUST_PER_LAMP: usize = 6;
 /// Кадров зерна плёнки и длительность каждого.
-const GRAIN_FRAMES: usize = 4;
-const GRAIN_FRAME_SECS: f32 = 0.09;
 /// Плотность экспоненциального тумана на камере игрока.
 pub(crate) const FOG_DENSITY: f32 = 0.045;
 
@@ -100,14 +99,6 @@ struct DustMote {
     half: Vec3,
 }
 
-/// Кадры зерна плёнки: сущности полноэкранных нод + таймер переключения.
-#[derive(Resource)]
-struct GrainFrames {
-    frames: Vec<Entity>,
-    idx: usize,
-    timer: Timer,
-}
-
 /// Разновидность светильника.
 enum LampKind {
     /// Разбитый: тёмная колба, висит криво, света нет.
@@ -150,7 +141,6 @@ impl Plugin for AtmospherePlugin {
                 flicker_lamps,
                 billboard_glows,
                 drift_dust,
-                tick_film_grain,
                 blink_beacons,
             )
                 .run_if(crate::in_act),
@@ -175,8 +165,8 @@ pub(crate) fn spawn_lamps(
     images: &mut ResMut<Assets<Image>>,
     maze: &[Vec<bool>],
     act: GameState,
+    rng: &mut StdRng,
 ) {
-    let mut rng = rand::thread_rng();
     let map_w = maze.first().map(Vec::len).unwrap_or(0);
     let map_h = maze.len();
 
@@ -257,7 +247,7 @@ pub(crate) fn spawn_lamps(
             if blackout {
                 dark_count += 1;
                 if rng.gen_bool(0.30) {
-                    spawn_lamp(commands, &mut *materials, &kit, base, LampKind::Broken, act);
+                    spawn_lamp(commands, &mut *materials, &kit, base, LampKind::Broken, act, &mut *rng);
                 }
                 continue;
             }
@@ -265,7 +255,7 @@ pub(crate) fn spawn_lamps(
                 dark_count += 1;
                 // В тёмной зоне света нет; иногда висит разбитый плафон.
                 if rng.gen_bool(DARK_ZONE_FIXTURE_CHANCE) {
-                    spawn_lamp(commands, &mut *materials, &kit, base, LampKind::Broken, act);
+                    spawn_lamp(commands, &mut *materials, &kit, base, LampKind::Broken, act, &mut *rng);
                 }
                 continue;
             }
@@ -277,14 +267,14 @@ pub(crate) fn spawn_lamps(
             } else {
                 LampKind::Steady
             };
-            spawn_lamp(commands, &mut *materials, &kit, base, kind, act);
+            spawn_lamp(commands, &mut *materials, &kit, base, kind, act, &mut *rng);
         }
     }
     info!(
         "Lamps: {lamp_count} spots ({dark_count} inside dark zones, no light there)"
     );
     if blackout {
-        spawn_beacons(commands, meshes, materials, maze, act);
+        spawn_beacons(commands, meshes, materials, maze, act, &mut *rng);
     }
 }
 
@@ -313,6 +303,7 @@ fn spawn_lamp(
     base: Vec3,
     kind: LampKind,
     act: GameState,
+    rng: &mut StdRng,
 ) {
     let broken = matches!(kind, LampKind::Broken);
     let flicker = matches!(kind, LampKind::Flicker);
@@ -415,13 +406,18 @@ fn spawn_lamp(
     });
 
     if !broken {
-        spawn_dust(commands, kit, base, act);
+        spawn_dust(commands, kit, base, act, &mut *rng);
     }
 }
 
 /// Пылинки, дрейфующие в свете рабочей лампы.
-fn spawn_dust(commands: &mut Commands, kit: &LampKit, base: Vec3, act: GameState) {
-    let mut rng = rand::thread_rng();
+fn spawn_dust(
+    commands: &mut Commands,
+    kit: &LampKit,
+    base: Vec3,
+    act: GameState,
+    rng: &mut StdRng,
+) {
     let anchor = base + Vec3::new(0.0, 1.7, 0.0);
     for _ in 0..DUST_PER_LAMP {
         commands.spawn((
@@ -451,55 +447,6 @@ fn spawn_dust(commands: &mut Commands, kit: &LampKit, base: Vec3, act: GameState
 // ---------------------------------------------------------------------------
 // Кино-оверлеи: виньетка и зерно плёнки
 // ---------------------------------------------------------------------------
-
-/// Постоянные оверлеи поверх HUD: тёмная виньетка по краям + зерно плёнки.
-/// Зерно - несколько предрасчитанных кадров, видимый переключается таймером.
-/// Оба оверлея отключаются в настройках меню. Вызывается из `setup_hud`.
-pub(crate) fn spawn_cinematic_overlays(
-    commands: &mut Commands,
-    images: &mut ResMut<Assets<Image>>,
-    settings: &GameSettings,
-    act: GameState,
-) {
-    // Виньетка - только если включена в настройках.
-    if settings.vignette {
-        commands.spawn((
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                ..default()
-            },
-            ImageNode::new(images.add(crate::textures::build_vignette_texture())),
-            StateScoped(act),
-        ));
-    }
-    // Зерно - только если включено; ресурс сбрасываем всегда, чтобы после
-    // выключения не осталось «висячих» сущностей от прошлого забега.
-    let mut frames = Vec::with_capacity(GRAIN_FRAMES);
-    if settings.film_grain {
-        for i in 0..GRAIN_FRAMES {
-            let entity = commands
-                .spawn((
-                    Node {
-                        width: Val::Percent(100.0),
-                        height: Val::Percent(100.0),
-                        ..default()
-                    },
-                    ImageNode::new(images.add(crate::textures::build_grain_frame(i as i32))),
-                    Visibility::Hidden,
-                    StateScoped(act),
-                ))
-                .id();
-            frames.push(entity);
-        }
-        commands.entity(frames[0]).insert(Visibility::Visible);
-    }
-    commands.insert_resource(GrainFrames {
-        frames,
-        idx: 0,
-        timer: Timer::from_seconds(GRAIN_FRAME_SECS, TimerMode::Repeating),
-    });
-}
 
 // ---------------------------------------------------------------------------
 // Системы
@@ -606,34 +553,6 @@ fn wrap_axis(coord: &mut f32, anchor: f32, half: f32) {
     }
 }
 
-/// Переключение кадров зерна плёнки (~11 кадров/с).
-fn tick_film_grain(
-    time: Res<Time>,
-    grain: Option<ResMut<GrainFrames>>,
-    mut visibility: Query<&mut Visibility>,
-) {
-    let Some(mut grain) = grain else {
-        return;
-    };
-    if grain.frames.is_empty() {
-        return;
-    }
-    grain.timer.tick(time.delta());
-    if !grain.timer.just_finished() {
-        return;
-    }
-    grain.idx = (grain.idx + 1) % grain.frames.len();
-    for (i, entity) in grain.frames.iter().enumerate() {
-        if let Ok(mut vis) = visibility.get_mut(*entity) {
-            *vis = if i == grain.idx {
-                Visibility::Visible
-            } else {
-                Visibility::Hidden
-            };
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Красные маяки Акта 3
 // ---------------------------------------------------------------------------
@@ -651,8 +570,8 @@ fn spawn_beacons(
     materials: &mut ResMut<Assets<StandardMaterial>>,
     maze: &[Vec<bool>],
     act: GameState,
+    rng: &mut StdRng,
 ) {
-    let mut rng = rand::thread_rng();
     let map_w = maze.first().map(Vec::len).unwrap_or(0);
     let map_h = maze.len();
     let mut n = 0u32;

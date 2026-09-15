@@ -101,6 +101,10 @@ pub(crate) struct GeneratorLever {
     pub(crate) pulled: bool,
 }
 
+/// Глобальные индексы собранных реликвий (какие именно - для сохранений).
+#[derive(Resource, Default)]
+pub struct QuestsDone(pub Vec<usize>);
+
 /// Маркер плашки субтитров (одна за раз - новая затирает старую).
 #[derive(Component)]
 pub(crate) struct SubtitleOverlay;
@@ -120,7 +124,7 @@ pub struct InteractionPlugin;
 
 impl Plugin for InteractionPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.insert_resource(QuestsDone::default()).add_systems(
             Update,
             (
                 battery_pickup_system,
@@ -331,6 +335,7 @@ fn quest_pickup_system(
     items: Query<(Entity, &Transform, &QuestItem)>,
     old_subtitles: Query<Entity, With<SubtitleOverlay>>,
     mut progress: ResMut<GameProgress>,
+    mut quests: ResMut<QuestsDone>,
 ) {
     let act = *game_state.get();
     for player in &players {
@@ -340,6 +345,7 @@ fn quest_pickup_system(
             if dx * dx + dz * dz < QUEST_PICKUP_RADIUS * QUEST_PICKUP_RADIUS {
                 commands.entity(entity).despawn();
                 progress.quest_items += 1;
+                quests.0.push(item.index);
                 let name = QUEST_NAMES[item.index % QUEST_COUNT];
                 // Новая находка - старые субтитры убираем (одна плашка за раз).
                 for entity in &old_subtitles {

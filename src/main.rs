@@ -13,9 +13,12 @@
 
 mod atmosphere;
 mod audio;
+mod effects;
 mod hallucinations;
 mod interaction;
 mod player;
+mod postfx;
+mod save_load;
 mod shadow;
 mod textures;
 
@@ -23,16 +26,21 @@ use std::path::PathBuf;
 
 use atmosphere::AtmospherePlugin;
 use audio::AudioDirectorPlugin;
+use bevy::audio::SpatialListener;
 use bevy::prelude::*;
 use bevy::state::state_scoped::StateScoped;
 use bevy::window::{CursorGrabMode, WindowPlugin, WindowResolution};
+use effects::HorrorEffectsPlugin;
 use hallucinations::{HallucinationsPlugin, Insanity, ScreamerState};
 use interaction::{AudioCassette, BatteryItem, GeneratorLever, InteractionPlugin, QuestItem};
 use player::{
     Flashlight, ForcedRun, InsanityVignette, Player, PlayerPlugin, Stamina, StaminaFill,
 };
+use postfx::PostFxPlugin;
+use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use rand::Rng;
+use rand::{Rng, SeedableRng};
+use save_load::SaveLoadPlugin;
 use shadow::ShadowPlugin;
 
 // ---------------------------------------------------------------------------
@@ -144,6 +152,14 @@ pub struct ReactorTimer {
     pub time_left: f32,
 }
 
+/// Сид следующей генерации (загрузка F9 подсовывает свой - мир повторяется).
+#[derive(Resource, Default)]
+pub struct LevelSeedOverride(pub Option<u64>);
+
+/// Сид текущего уровня (сохранение F5 забирает его в JSON).
+#[derive(Resource, Default)]
+pub struct CurrentLevelSeed(pub u64);
+
 /// Настройки из меню (живут всю сессию, между состояниями не сбрасываются).
 #[derive(Resource)]
 pub struct GameSettings {
@@ -164,7 +180,7 @@ impl Default for GameSettings {
 
 /// Светящийся фрагмент эха - цель Акта 2 (5 штук в дальних клетках лабиринта).
 #[derive(Component)]
-struct EchoFragment;
+pub(crate) struct EchoFragment;
 
 /// Лифт - цель Акта 3 (триггер финала).
 #[derive(Component)]
@@ -210,6 +226,8 @@ fn main() {
         .insert_resource(LevelColliders::default())
         .insert_resource(GameProgress::default())
         .insert_resource(GameSettings::default())
+        .insert_resource(LevelSeedOverride::default())
+        .insert_resource(CurrentLevelSeed::default())
         .init_state::<GameState>()
         // В Bevy 0.16 state-scoped сущности включаются явно,
         // иначе маркеры StateScoped не будут ничего удалять.
@@ -221,6 +239,9 @@ fn main() {
             HallucinationsPlugin,
             InteractionPlugin,
             ShadowPlugin,
+            HorrorEffectsPlugin,
+            PostFxPlugin,
+            SaveLoadPlugin,
         ))
         // Холодный тусклый свет окружения.
         .add_systems(Startup, setup_ambient_light)
@@ -421,7 +442,8 @@ fn setup_menu(
                     "WASD / ARROWS - MOVE      MOUSE - LOOK      SHIFT - RUN\n\
                      F - FLASHLIGHT (DRAINS BATTERY)      E - USE      R - RESTART RUN\n\
                      ACT 1: PULL THE GENERATOR LEVER - ACT 2: 5 ECHO FRAGMENTS - ACT 3: REACH THE LIFT\n\
-                     DARKNESS FEEDS MADNESS - BATTERIES SAVE LIGHT - FIND 5 KEEPSAKES FOR THE GOOD END",
+                     DARKNESS FEEDS MADNESS - BATTERIES SAVE LIGHT - FIND 5 KEEPSAKES FOR THE GOOD END\n\
+                     F5 - SAVE      F9 - LOAD      F11 - FULLSCREEN",
                 ),
                 TextFont {
                     font_size: 18.0,
@@ -577,11 +599,11 @@ pub(crate) fn cell_center(cx: usize, cy: usize) -> (f32, f32) {
     )
 }
 
-/// Генератор лабиринта: итеративный backtracker (`true` - стена).
+/// Генератор лабиринта: итеративный backtracker (`true` - стена). Сид задаёт весь лабиринт (сохранения).
 /// После построения часть тупиков «заплетается» в петли, чтобы были обходы.
-fn generate_maze(w: usize, h: usize) -> Vec<Vec<bool>> {
+fn generate_maze(w: usize, h: usize, seed: u64) -> Vec<Vec<bool>> {
     debug_assert!(w % 2 == 1 && h % 2 == 1, "maze size must be odd");
-    let mut rng = rand::thread_rng();
+    let mut rng = StdRng::seed_from_u64(seed);
     let mut wall = vec![vec![true; w]; h];
     let mut stack = vec![(1usize, 1usize)];
     wall[1][1] = false;
@@ -642,11 +664,20 @@ fn generate_maze(w: usize, h: usize) -> Vec<Vec<bool>> {
 }
 
 /// PNG-текстура из assets или процедурная заглушка, если файла нет на диске.
+/// Путь текстуры для акта: `textures/wall1.png` -> `textures/act2_wall1.png`.
+fn act_texture_path(base: &str, act: GameState) -> String {
+    match act {
+        GameState::Act2_TheInsanity => base.replacen("textures/", "textures/act2_", 1),
+        GameState::Act3_TheReactor => base.replacen("textures/", "textures/act3_", 1),
+        _ => base.to_string(),
+    }
+}
+
 fn texture_or_fallback(
     assets: &AssetServer,
     images: &mut ResMut<Assets<Image>>,
     path: &str,
-    fallback: fn() -> Image,
+    fallback: impl FnOnce() -> Image,
 ) -> Handle<Image> {
     if crate::audio::asset_exists(path) {
         assets.load(path)
@@ -667,45 +698,74 @@ fn generate_level(
     assets: Res<AssetServer>,
     mut colliders: ResMut<LevelColliders>,
     state: Res<State<GameState>>,
+    mut seed_override: ResMut<LevelSeedOverride>,
+    mut current_seed: ResMut<CurrentLevelSeed>,
 ) {
     // Сброс коллайдеров (прогресс забега сбрасывает `reset_run` на входе в Акт 1).
     colliders.walls.clear();
     let act = *state.get();
 
-    let maze = generate_maze(MAZE_W, MAZE_H);
+    // Сид мира: загрузка (F9) подсовывает свой - и лабиринт повторяется один в один.
+    let seed = seed_override.0.take().unwrap_or_else(|| rand::thread_rng().gen());
+    current_seed.0 = seed;
+    let mut rng = StdRng::seed_from_u64(seed);
+    let maze = generate_maze(MAZE_W, MAZE_H, seed);
 
-    // Текстуры заброшки: PNG из assets (или процедурные, если файлов нет).
-    let wall_tex_a =
-        texture_or_fallback(&assets, &mut images, TEX_WALL_A, textures::build_wall_texture);
-    let wall_tex_b =
-        texture_or_fallback(&assets, &mut images, TEX_WALL_B, textures::build_wall_texture);
-    let floor_tex =
-        texture_or_fallback(&assets, &mut images, TEX_FLOOR, textures::build_floor_texture);
-    let ceil_tex =
-        texture_or_fallback(&assets, &mut images, TEX_CEIL, textures::build_ceiling_texture);
+    // Текстуры заброшки: у каждого акта свои PNG (или процедурные, если файлов нет).
+    let look = textures::act_look(act);
+    let wall_tex_a = texture_or_fallback(
+        &assets,
+        &mut images,
+        &act_texture_path(TEX_WALL_A, act),
+        || textures::build_wall_texture(look),
+    );
+    let wall_tex_b = texture_or_fallback(
+        &assets,
+        &mut images,
+        &act_texture_path(TEX_WALL_B, act),
+        || textures::build_wall_texture(look),
+    );
+    let floor_tex = texture_or_fallback(
+        &assets,
+        &mut images,
+        &act_texture_path(TEX_FLOOR, act),
+        || textures::build_floor_texture(look),
+    );
+    let ceil_tex = texture_or_fallback(
+        &assets,
+        &mut images,
+        &act_texture_path(TEX_CEIL, act),
+        || textures::build_ceiling_texture(look),
+    );
 
+    // Каждый акт - свой оттенок поверхностей (множитель поверх текстуры).
+    let (wall_tint, surface_tint) = match act {
+        GameState::Act2_TheInsanity => ([0.92, 0.82, 0.82], [0.9, 0.82, 0.82]),
+        GameState::Act3_TheReactor => ([0.8, 0.68, 0.6], [0.78, 0.66, 0.6]),
+        _ => ([1.0, 1.0, 1.0], [1.0, 1.0, 1.0]),
+    };
     // Общие материалы. base_color умножается на текстуру и работает оттенком.
     let floor_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(1.0, 1.0, 1.0),
+        base_color: Color::srgb(surface_tint[0], surface_tint[1], surface_tint[2]),
         base_color_texture: Some(floor_tex),
         // Полусухой грязный пол: бликует под лампами вместо матовой каши.
         perceptual_roughness: 0.45,
         ..default()
     });
     let ceil_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(1.0, 1.0, 1.0),
+        base_color: Color::srgb(surface_tint[0], surface_tint[1], surface_tint[2]),
         base_color_texture: Some(ceil_tex),
         perceptual_roughness: 0.95,
         ..default()
     });
     let wall_mat_a = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.85, 0.83, 0.88),
+        base_color: Color::srgb(0.85 * wall_tint[0], 0.83 * wall_tint[1], 0.88 * wall_tint[2]),
         base_color_texture: Some(wall_tex_a),
         perceptual_roughness: 0.9,
         ..default()
     });
     let wall_mat_b = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.6, 0.58, 0.63),
+        base_color: Color::srgb(0.6 * wall_tint[0], 0.58 * wall_tint[1], 0.63 * wall_tint[2]),
         base_color_texture: Some(wall_tex_b),
         perceptual_roughness: 0.9,
         ..default()
@@ -759,6 +819,7 @@ fn generate_level(
         &mut images,
         &maze,
         act,
+        &mut rng,
     );
 
     // Игрок в клетке (1, 1): смотрим в открытый проход -
@@ -789,6 +850,9 @@ fn generate_level(
             Stamina::default(),
             ForcedRun(false),
             Insanity(0.0),
+            // Уши для пространственных аномалий + WGSL-постобработка.
+            SpatialListener::new(0.25),
+            postfx::HorrorPostFx::default(),
             StateScoped(act),
         ))
         .with_children(|parent| {
@@ -814,7 +878,6 @@ fn generate_level(
         });
 
     // --- Содержимое актов: батарейки в каждом, остальное - по акту ---
-    let mut rng = rand::thread_rng();
     let mut floor_cells: Vec<(usize, usize)> = Vec::new();
     for (cy, row) in maze.iter().enumerate() {
         for (cx, &is_wall) in row.iter().enumerate() {
@@ -1051,7 +1114,7 @@ fn spawn_cassette(
 /// Случайная клетка пола не ближе `min_dist` (по Манхэттену от спавна (1, 1)).
 /// Если подходящих нет - любая клетка пола.
 fn random_floor_spot(
-    rng: &mut rand::rngs::ThreadRng,
+    rng: &mut StdRng,
     floor: &[(usize, usize)],
     min_dist: usize,
 ) -> Option<Vec3> {
@@ -1170,12 +1233,7 @@ fn spawn_elevator(
 /// Построение HUD: виньетка безумия, маленькая тусклая полоска стамины
 /// и кино-оверлеи (виньетка + зерно плёнки). Никаких подсказок, прицела
 /// и счётчиков - только стамина. Всё удаляется автоматически при выходе.
-fn setup_hud(
-    mut commands: Commands,
-    mut images: ResMut<Assets<Image>>,
-    settings: Res<GameSettings>,
-    state: Res<State<GameState>>,
-) {
+fn setup_hud(mut commands: Commands, state: Res<State<GameState>>) {
     let act = *state.get();
     // Виньетка безумия - первой, чтобы лежать ПОД остальным HUD.
     commands.spawn((
@@ -1277,8 +1335,6 @@ fn setup_hud(
                     });
             });
     }
-
-    atmosphere::spawn_cinematic_overlays(&mut commands, &mut images, &settings, act);
 }
 
 // ---------------------------------------------------------------------------
@@ -1338,9 +1394,11 @@ fn reset_run(
     mut progress: ResMut<GameProgress>,
     mut screamer: ResMut<ScreamerState>,
     mut ambient: ResMut<AmbientLight>,
+    mut quests: ResMut<interaction::QuestsDone>,
 ) {
     *progress = GameProgress::default();
     screamer.full_reset();
+    quests.0.clear();
     commands.remove_resource::<PendingTransition>();
     ambient.color = Color::srgb(0.5, 0.58, 0.75);
     ambient.brightness = 0.09;

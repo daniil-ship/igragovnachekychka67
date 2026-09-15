@@ -12,6 +12,9 @@ license = "MIT OR Apache-2.0"
 bevy = { version = "0.16", features = ["mp3"] }
 # Случайные числа: выбор пары скримеров, процедурный лабиринт, мерцание.
 rand = "0.8"
+# Сохранения: сериализация прогресса в JSON (F5/F9).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [profile.release]
 opt-level = 3

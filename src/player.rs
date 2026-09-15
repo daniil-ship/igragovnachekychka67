@@ -322,7 +322,7 @@ fn flashlight_toggle_and_drain_system(
 
 /// Мерцание фонарика. Лёгкое дрожание есть всегда, но чем выше скрытое
 /// безумие - тем сильнее дёргается свет и тем чаще случаются провалы.
-fn flashlight_flicker(
+pub(crate) fn flashlight_flicker(
     time: Res<Time>,
     insanity_query: Query<&Insanity>,
     mut lamp_query: Query<(&Flashlight, &mut SpotLight)>,
