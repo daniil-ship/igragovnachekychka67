@@ -417,7 +417,8 @@ fn monster_ai(
                     away * monster.speed * dt,
                     &colliders.walls,
                 );
-                face_towards(&mut transform, transform.translation + away);
+                let facing = transform.translation + away;
+                face_towards(&mut transform, facing);
                 if monster.state_timer >= MONSTER_RETREAT_SECS {
                     monster.state = if act == GameState::Act3_TheReactor {
                         MonsterState::Chasing
@@ -470,7 +471,8 @@ fn monster_ai(
                             step_dir * monster.speed * dt,
                             &colliders.walls,
                         );
-                        face_towards(&mut transform, transform.translation + step_dir);
+                        let facing = transform.translation + step_dir;
+                        face_towards(&mut transform, facing);
                     }
                 }
             }
