@@ -12,7 +12,7 @@ use bevy::state::state_scoped::StateScoped;
 use rand::Rng;
 
 use crate::player::Player;
-use crate::{AppState, GameSettings, WALL_H};
+use crate::{GameState, GameSettings, WALL_H};
 
 // ---------------------------------------------------------------------------
 // Константы баланса
@@ -146,8 +146,14 @@ impl Plugin for AtmospherePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (flicker_lamps, billboard_glows, drift_dust, tick_film_grain)
-                .run_if(in_state(AppState::InGame)),
+            (
+                flicker_lamps,
+                billboard_glows,
+                drift_dust,
+                tick_film_grain,
+                blink_beacons,
+            )
+                .run_if(crate::in_act),
         );
     }
 }
@@ -161,16 +167,27 @@ impl Plugin for AtmospherePlugin {
 /// Сетка с шагом [`LAMP_STEP`], часть ламп разбита или мигает, плюс
 /// [`DARK_ZONE_COUNT`] тёмные зоны, где света нет вообще. Спавн игрока
 /// (клетка (1, 1)) всегда освещён. Вызывается из `generate_level`.
+/// В Акте 3 - блэкаут: света нет, только редкие плафоны и красные маяки.
 pub(crate) fn spawn_lamps(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     images: &mut ResMut<Assets<Image>>,
     maze: &[Vec<bool>],
+    act: GameState,
 ) {
     let mut rng = rand::thread_rng();
     let map_w = maze.first().map(Vec::len).unwrap_or(0);
     let map_h = maze.len();
+
+    // Акт 3: свет мёртв - только редкие разбитые плафоны и красные маяки.
+    let blackout = act == GameState::Act3_TheReactor;
+    // Чем дальше, тем нервнее свет: в Акте 1 почти не мигает, в Акте 2 - штатно.
+    let flicker_chance = match act {
+        GameState::Act1_TheDescent => 0.15,
+        GameState::Act2_TheInsanity => FLICKER_CHANCE,
+        _ => 0.0,
+    };
 
     // Тёмные зоны: прямоугольники клеток, где ламп нет вообще.
     // x0 >= 3, поэтому спавн игрока (1, 1) всегда вне тёмных зон.
@@ -236,28 +253,39 @@ pub(crate) fn spawn_lamps(
             }
             let (x, z) = crate::cell_center(cx, cy);
             let base = Vec3::new(x, 0.0, z);
+            // Акт 3: свет мёртв - лишь изредка разбитый плафон.
+            if blackout {
+                dark_count += 1;
+                if rng.gen_bool(0.30) {
+                    spawn_lamp(commands, &mut *materials, &kit, base, LampKind::Broken, act);
+                }
+                continue;
+            }
             if in_dark_zone(cx as i32, cy as i32) {
                 dark_count += 1;
                 // В тёмной зоне света нет; иногда висит разбитый плафон.
                 if rng.gen_bool(DARK_ZONE_FIXTURE_CHANCE) {
-                    spawn_lamp(commands, &mut *materials, &kit, base, LampKind::Broken);
+                    spawn_lamp(commands, &mut *materials, &kit, base, LampKind::Broken, act);
                 }
                 continue;
             }
             lamp_count += 1;
             let kind = if rng.gen_bool(BROKEN_CHANCE) {
                 LampKind::Broken
-            } else if rng.gen_bool(FLICKER_CHANCE) {
+            } else if rng.gen_bool(flicker_chance) {
                 LampKind::Flicker
             } else {
                 LampKind::Steady
             };
-            spawn_lamp(commands, &mut *materials, &kit, base, kind);
+            spawn_lamp(commands, &mut *materials, &kit, base, kind, act);
         }
     }
     info!(
         "Lamps: {lamp_count} spots ({dark_count} inside dark zones, no light there)"
     );
+    if blackout {
+        spawn_beacons(commands, meshes, materials, maze, act);
+    }
 }
 
 /// Материал гало: тёплый оттенок, радиальная текстура, аддитивный блендинг.
@@ -284,6 +312,7 @@ fn spawn_lamp(
     kit: &LampKit,
     base: Vec3,
     kind: LampKind,
+    act: GameState,
 ) {
     let broken = matches!(kind, LampKind::Broken);
     let flicker = matches!(kind, LampKind::Flicker);
@@ -307,7 +336,7 @@ fn spawn_lamp(
     let mut root = commands.spawn((
         Transform::from_translation(base),
         Visibility::default(),
-        StateScoped(AppState::InGame),
+        StateScoped(act),
     ));
     if flicker {
         root.insert(FlickerLamp {
@@ -326,7 +355,7 @@ fn spawn_lamp(
             Mesh3d(kit.cord_mesh.clone()),
             MeshMaterial3d(kit.cord_mat.clone()),
             Transform::from_xyz(0.0, CORD_Y, 0.0),
-            StateScoped(AppState::InGame),
+            StateScoped(act),
         ));
         root.spawn((
             Mesh3d(kit.shade_mesh.clone()),
@@ -336,7 +365,7 @@ fn spawn_lamp(
                 rotation: tilt,
                 ..default()
             },
-            StateScoped(AppState::InGame),
+            StateScoped(act),
         ));
         let mut bulb = root.spawn((
             Mesh3d(kit.bulb_mesh.clone()),
@@ -346,7 +375,7 @@ fn spawn_lamp(
                 rotation: tilt,
                 ..default()
             },
-            StateScoped(AppState::InGame),
+            StateScoped(act),
         ));
         if flicker {
             bulb.insert(LampBulb);
@@ -360,7 +389,7 @@ fn spawn_lamp(
                     ..default()
                 },
                 Transform::from_xyz(0.0, LIGHT_Y, 0.0),
-                StateScoped(AppState::InGame),
+                StateScoped(act),
             ));
             // Мигающей лампе - уникальный материал гало.
             let glow_mat = if flicker {
@@ -377,7 +406,7 @@ fn spawn_lamp(
                     scale: Vec3::splat(LAMP_GLOW_SIZE),
                 },
                 Billboard,
-                StateScoped(AppState::InGame),
+                StateScoped(act),
             ));
             if flicker {
                 glow.insert(LampGlow);
@@ -386,12 +415,12 @@ fn spawn_lamp(
     });
 
     if !broken {
-        spawn_dust(commands, kit, base);
+        spawn_dust(commands, kit, base, act);
     }
 }
 
 /// Пылинки, дрейфующие в свете рабочей лампы.
-fn spawn_dust(commands: &mut Commands, kit: &LampKit, base: Vec3) {
+fn spawn_dust(commands: &mut Commands, kit: &LampKit, base: Vec3, act: GameState) {
     let mut rng = rand::thread_rng();
     let anchor = base + Vec3::new(0.0, 1.7, 0.0);
     for _ in 0..DUST_PER_LAMP {
@@ -414,7 +443,7 @@ fn spawn_dust(commands: &mut Commands, kit: &LampKit, base: Vec3) {
                 anchor,
                 half: Vec3::new(1.5, 1.0, 1.5),
             },
-            StateScoped(AppState::InGame),
+            StateScoped(act),
         ));
     }
 }
@@ -430,6 +459,7 @@ pub(crate) fn spawn_cinematic_overlays(
     commands: &mut Commands,
     images: &mut ResMut<Assets<Image>>,
     settings: &GameSettings,
+    act: GameState,
 ) {
     // Виньетка - только если включена в настройках.
     if settings.vignette {
@@ -440,7 +470,7 @@ pub(crate) fn spawn_cinematic_overlays(
                 ..default()
             },
             ImageNode::new(images.add(crate::textures::build_vignette_texture())),
-            StateScoped(AppState::InGame),
+            StateScoped(act),
         ));
     }
     // Зерно - только если включено; ресурс сбрасываем всегда, чтобы после
@@ -457,7 +487,7 @@ pub(crate) fn spawn_cinematic_overlays(
                     },
                     ImageNode::new(images.add(crate::textures::build_grain_frame(i as i32))),
                     Visibility::Hidden,
-                    StateScoped(AppState::InGame),
+                    StateScoped(act),
                 ))
                 .id();
             frames.push(entity);
@@ -601,5 +631,77 @@ fn tick_film_grain(
                 Visibility::Hidden
             };
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Красные маяки Акта 3
+// ---------------------------------------------------------------------------
+
+/// Аварийный маяк Акта 3: красный плафон, мигающий вспышками.
+#[derive(Component)]
+struct EmergencyBeacon {
+    phase: f32,
+}
+
+/// Расстановка красных маяков (Акт 3, свет мёртв): до 4 штук редкой сеткой.
+fn spawn_beacons(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    maze: &[Vec<bool>],
+    act: GameState,
+) {
+    let mut rng = rand::thread_rng();
+    let map_w = maze.first().map(Vec::len).unwrap_or(0);
+    let map_h = maze.len();
+    let mut n = 0u32;
+    for cy in (1..map_h).step_by(6) {
+        for cx in (1..map_w).step_by(6) {
+            if maze.get(cy).and_then(|row| row.get(cx)) != Some(&false) {
+                continue;
+            }
+            n += 1;
+            if n > 4 {
+                return;
+            }
+            let (x, z) = crate::cell_center(cx, cy);
+            commands.spawn((
+                Mesh3d(meshes.add(Sphere::new(0.09).mesh().uv(12, 8))),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color: Color::srgb(1.0, 0.05, 0.04),
+                    unlit: true,
+                    ..default()
+                })),
+                Transform::from_xyz(x, WALL_H - 0.15, z),
+                PointLight {
+                    color: Color::srgb(1.0, 0.06, 0.05),
+                    intensity: 60_000.0,
+                    range: 12.0,
+                    ..default()
+                },
+                EmergencyBeacon {
+                    phase: rng.gen_range(0.0..std::f32::consts::TAU),
+                },
+                StateScoped(act),
+            ));
+        }
+    }
+}
+
+/// Мигание красных маяков Акта 3: короткие вспышки на фоне тьмы.
+fn blink_beacons(
+    time: Res<Time>,
+    game_state: Res<State<GameState>>,
+    mut beacons: Query<(&EmergencyBeacon, &mut PointLight)>,
+) {
+    if *game_state.get() != GameState::Act3_TheReactor {
+        return;
+    }
+    let t = time.elapsed_secs();
+    for (beacon, mut light) in &mut beacons {
+        // Вспышка каждые ~4 с (со сдвигом фаз между маяками).
+        let flash = (t * 1.6 + beacon.phase).sin() > 0.86;
+        light.intensity = if flash { 60_000.0 } else { 0.0 };
     }
 }

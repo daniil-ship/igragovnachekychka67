@@ -1,10 +1,10 @@
 //! Звукорежиссёр: музыка меню и циклический амбиент с плавными переходами.
 //!
-//! - В [`AppState::MainMenu`](crate::AppState::MainMenu) играет `menu.mp3`
+//! - В [`GameState::MainMenu`](crate::GameState::MainMenu) играет `menu.mp3`
 //!   (одноразовый запуск + ручной перезапуск: штатный `LOOP` этот трек
 //!   почему-то оставлял немым, а `ONCE`+перезапуск проверен на амбиенте).
-//! - В [`AppState::InGame`](crate::AppState::InGame) циклично сменяют друг
-//!   друга `ambient1.mp3` и `ambient2.mp3` (каждый с плавным нарастанием,
+//! - В игровых актах циклично сменяют друг друга `ambient1.mp3`
+//!   и `ambient2.mp3` (каждый с плавным нарастанием,
 //!   переключение - бесшовное, по факту окончания трека).
 //!
 //! Все аудиофайлы **опциональны**: если их нет в `assets/`, игра просто
@@ -16,7 +16,7 @@ use std::path::Path;
 use bevy::audio::Volume;
 use bevy::prelude::*;
 
-use crate::AppState;
+use crate::GameState;
 
 // ---------------------------------------------------------------------------
 // Константы
@@ -127,15 +127,17 @@ pub struct AudioDirectorPlugin;
 impl Plugin for AudioDirectorPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(AudioDirector::default())
-            .add_systems(OnEnter(AppState::MainMenu), start_menu_music)
-            .add_systems(OnEnter(AppState::InGame), begin_game_audio)
-            .add_systems(Update, retry_menu_music.run_if(in_state(AppState::MainMenu)))
+            .add_systems(OnEnter(GameState::MainMenu), start_menu_music)
+            .add_systems(OnEnter(GameState::Act1_TheDescent), begin_game_audio)
+            .add_systems(OnEnter(GameState::Act2_TheInsanity), begin_game_audio)
+            .add_systems(OnEnter(GameState::Act3_TheReactor), begin_game_audio)
+            .add_systems(Update, retry_menu_music.run_if(in_state(GameState::MainMenu)))
             .add_systems(Update, update_menu_music)
             .add_systems(
                 Update,
-                update_ambient_cycle.run_if(in_state(AppState::InGame)),
+                update_ambient_cycle.run_if(crate::in_act),
             )
-            .add_systems(Update, fade_out_ambient.run_if(in_state(AppState::MainMenu)));
+            .add_systems(Update, fade_out_ambient.run_if(in_state(GameState::MainMenu)));
     }
 }
 
@@ -310,7 +312,7 @@ fn update_menu_music(
 // Системы амбиента
 // ---------------------------------------------------------------------------
 
-/// Вход в игру: гасим меню-музыку и запускаем цикл амбиента.
+/// Вход в акт: гасим меню-музыку и запускаем цикл амбиента.
 fn begin_game_audio(
     mut commands: Commands,
     assets: Res<AssetServer>,

@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use rand::Rng;
 
 use crate::hallucinations::Insanity;
-use crate::{GameProgress, LevelColliders};
+use crate::{GameProgress, GameState, LevelColliders};
 
 // ---------------------------------------------------------------------------
 // Константы баланса
@@ -28,6 +28,10 @@ pub const EYE_HEIGHT: f32 = 1.65;
 const PLAYER_RADIUS: f32 = 0.35;
 /// Базовая яркость фонарика (канделы, физические единицы Bevy).
 pub const FLASHLIGHT_INTENSITY: f32 = 500_000.0;
+/// Дальность луча фонарика, метры (и радиус отпугивания Тени).
+pub const FLASHLIGHT_RANGE: f32 = 32.0;
+/// Внешний угол конуса фонарика, радианы (конус отпугивания Тени).
+pub const FLASHLIGHT_OUTER_ANGLE: f32 = 0.55;
 
 // ---------------------------------------------------------------------------
 // Компоненты
@@ -108,7 +112,7 @@ pub struct InsanityVignette;
 // ---------------------------------------------------------------------------
 
 /// Регистрирует все системы игрока. Они работают только тогда, когда
-/// разрешает [`crate::game_input_allowed`]: состояние `InGame`, нет активного
+/// разрешает [`crate::game_input_allowed`]: идёт акт, нет активного
 /// скримера и игра ещё не выиграна (тем самым на секунду скримера управление
 /// полностью блокируется).
 pub struct PlayerPlugin;
@@ -197,7 +201,7 @@ fn player_movement(
 
 /// Сдвиг позиции с выталкиванием из AABB стен (по осям X и Z раздельно,
 /// чтобы можно было скользить вдоль стен).
-fn move_with_collision(
+pub(crate) fn move_with_collision(
     position: &mut Vec3,
     delta: Vec3,
     walls: &[crate::WallAabb],
@@ -241,12 +245,12 @@ fn move_with_collision(
 /// - Если стамина `<= 0.0`, но игрок **продолжает** держать `Shift` и
 ///   двигаться, поднимается флаг [`ForcedRun`] - принудительный бег.
 ///   Скорость при этом не падает, но безумие начинает расти.
-/// - В момент истощения стамины - бросок 25% на смерть (экран "YOU DIED").
+/// - В момент истощения стамины - бросок 25% на смерть (финал GameOver).
 fn stamina_system(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut commands: Commands,
     mut progress: ResMut<GameProgress>,
+    mut next_state: ResMut<NextState<GameState>>,
     mut query: Query<(&mut Stamina, &mut ForcedRun)>,
 ) {
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -276,11 +280,11 @@ fn stamina_system(
         }
         // В момент, когда стамина кончается, - бросок 25% на смерть.
         // Крутится один раз за истощение (по переходу >0 -> 0), не каждый кадр.
-        if !progress.won && !progress.dead && had_stamina && stamina.current <= 0.0 {
+        if had_stamina && stamina.current <= 0.0 {
             let mut rng = rand::thread_rng();
             if rng.gen_bool(0.25) {
-                progress.dead = true;
-                crate::spawn_death_overlay(&mut commands);
+                progress.ending = Some(crate::EndingKind::HeartDeath);
+                next_state.set(crate::GameState::GameOver);
                 info!("Your heart gave out in the dark...");
             }
         }

@@ -32,7 +32,7 @@ use rand::Rng;
 use crate::audio::asset_exists;
 use crate::player::{Flashlight, ForcedRun, Player, Stamina};
 use crate::shadow::{spawn_shadow, ShadowLunge};
-use crate::{AppState, GameProgress, LevelColliders, WallAabb};
+use crate::{GameState, LevelColliders, WallAabb};
 
 // ---------------------------------------------------------------------------
 // Константы
@@ -60,7 +60,7 @@ pub const SCREAMER_SOUNDS: [&str; 6] = [
 /// Критический порог безумия: при достижении срабатывает скример.
 pub const INSANITY_THRESHOLD: f32 = 100.0;
 /// Скорость накопления безумия в принудительном беге (ед/с).
-const INSANITY_GAIN_PER_SEC: f32 = 14.0;
+const INSANITY_GAIN_PER_SEC: f32 = 25.0;
 /// Скорость «остывания» безумия, когда герой не насилует себя (ед/с).
 const INSANITY_DECAY_PER_SEC: f32 = 8.0;
 /// Набор безумия в темноте при выключенном фонаре (ед/с, Акт 2).
@@ -143,7 +143,7 @@ impl Plugin for HallucinationsPlugin {
         app.insert_resource(ScreamerState::default()).add_systems(
             Update,
             (update_madness, tick_screamer, darkness_insanity_penalty_system)
-                .run_if(in_state(AppState::InGame)),
+                .run_if(crate::in_act),
         );
     }
 }
@@ -164,7 +164,7 @@ fn update_madness(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     colliders: Res<LevelColliders>,
-    progress: Res<GameProgress>,
+    game_state: Res<State<GameState>>,
     mut state: ResMut<ScreamerState>,
     mut lunge: ResMut<ShadowLunge>,
     flashlights: Query<&Flashlight>,
@@ -172,9 +172,10 @@ fn update_madness(
 ) {
     let dt = time.delta_secs();
     state.cooldown = (state.cooldown - dt).max(0.0);
-    if state.active || progress.won || progress.dead {
+    if state.active {
         return;
     }
+    let act = *game_state.get();
     // Фонарь выключен - во тьме безумие не остывает (см. штраф за темноту).
     let light_on = flashlights.iter().next().map(|f| f.is_on).unwrap_or(true);
 
@@ -208,6 +209,7 @@ fn update_madness(
                     transform.translation,
                     player.yaw,
                     &colliders.walls,
+                    act,
                 );
                 state.random_trigger = None;
             }
@@ -232,6 +234,7 @@ fn update_madness(
                     transform.translation,
                     player.yaw,
                     &colliders.walls,
+                    act,
                 );
             }
         }
@@ -245,12 +248,8 @@ fn update_madness(
 fn darkness_insanity_penalty_system(
     time: Res<Time>,
     flashlights: Query<&Flashlight>,
-    progress: Res<GameProgress>,
     mut players: Query<&mut Insanity, With<Player>>,
 ) {
-    if progress.won || progress.dead {
-        return;
-    }
     let light_on = flashlights.iter().next().map(|f| f.is_on).unwrap_or(true);
     if light_on {
         return;
@@ -273,6 +272,7 @@ fn fire_screamer(
     player_pos: Vec3,
     yaw: f32,
     walls: &[WallAabb],
+    act: GameState,
 ) {
     // Случайная пара с одинаковым индексом: skrimerN.png + screamN.mp3.
     let mut rng = rand::thread_rng();
@@ -298,14 +298,14 @@ fn fire_screamer(
     if shadow_mode {
         // --- 3D-скример: чёрная тварь прямо перед игроком ---
         // Fullscreen-картинку не показываем, чтобы тварь было видно.
-        spawn_shadow(commands, meshes, materials, lunge, player_pos, yaw, walls);
+        spawn_shadow(commands, meshes, materials, lunge, player_pos, yaw, walls, act);
     } else if asset_exists(image_path) {
         let handle: Handle<Image> = assets.load(image_path);
         commands.spawn((
             fullscreen,
             ImageNode::new(handle),
             ScreamerOverlay,
-            StateScoped(AppState::InGame),
+            StateScoped(act),
         ));
     } else {
         // PNG нет - игра продолжается, мигает красно-чёрная заглушка.
@@ -316,7 +316,7 @@ fn fire_screamer(
             BackgroundColor(Color::srgb(0.6, 0.0, 0.0)),
             FallbackFlash,
             ScreamerOverlay,
-            StateScoped(AppState::InGame),
+            StateScoped(act),
         ));
     }
 
@@ -326,7 +326,7 @@ fn fire_screamer(
         commands.spawn((
             AudioPlayer::new(handle),
             PlaybackSettings::DESPAWN.with_volume(Volume::Linear(1.0)),
-            StateScoped(AppState::InGame),
+            StateScoped(act),
         ));
     } else {
         warn!("{sound_path} not found - screamer without sound (drop the file into assets/ to enable it)");

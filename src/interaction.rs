@@ -1,11 +1,13 @@
-//! Подбор батареек и сюжетные кассеты (механики Акта 2).
+//! Интерактив актов: батарейки, кассеты, рычаг, реликвии, субтитры.
 //!
 //! - Батарейки ([`BatteryItem`]) подбираются автоматически рядом с игроком
 //!   и восстанавливают заряд фонаря ([`Flashlight`](crate::player::Flashlight)).
 //! - Кассеты ([`AudioCassette`]) активируются клавишей E рядом: играет
 //!   лор-аудио (файл опционален - проверяется в момент активации, как PNG
 //!   скриммеров) и показываются субтитры с текстом записи.
-//! Точки спавна хранятся в [`GameProgress`](crate::GameProgress) для рестарта.
+//! - Рычаг генератора ([`GeneratorLever`]): E в Акте 1 ведёт в Акт 2.
+//! - Реликвии брата ([`QuestItem`]): автоподбор, 5 штук - хорошая концовка.
+//! - Субтитры - общая плашка для кассет, находок, рычага и заставок актов.
 
 use bevy::audio::Volume;
 use bevy::prelude::*;
@@ -13,7 +15,7 @@ use bevy::state::state_scoped::StateScoped;
 
 use crate::audio::asset_exists;
 use crate::player::{Flashlight, Player};
-use crate::{AppState, GameProgress};
+use crate::{GameState, GameProgress};
 
 // ---------------------------------------------------------------------------
 // Константы баланса
@@ -42,18 +44,32 @@ const SUBTITLE_SECS: f32 = 7.0;
 /// не знает тире и кавычек-ёлочек.
 const CASSETTE_LORE: [(&str, &str); CASSETTE_COUNT] = [
     (
-        "TAPE 1/3 - DR. VELSKAYA, DAY 12",
-        "The walls breathe when the lights die. I counted four breaths between the flickers. Whatever you do - do not let your torch go out.",
+        "TAPE 1/3 - PROF. RADCHENKO, 1984",
+        "The psi-seam turns guilt into living hallucinations. On the margins: a drawing of a drowning child. 'I screamed, and you stayed silent.'",
     ),
     (
-        "TAPE 2/3 - ORDERLY GRIMM, DAY 27",
-        "Batteries drain faster near the east cells. As if something down there is thirsty. We stopped going there alone.",
+        "TAPE 2/3 - EVACUATION RECORD, 1984",
+        "Screams. Panic. 'It feeds on our guilt! If you run from it - it grows faster. The only way to stop the Fade: hold direct light on it!'",
     ),
     (
-        "TAPE 3/3 - UNKNOWN VOICE, DAY 40",
-        "It wears the dark like skin. It cannot stand the light, but it has learned to wait. It is very, very patient. And so close now.",
+        "TAPE 3/3 - UNKNOWN VOICE",
+        "It wears the dark like skin. It cannot stand the light, but it has learned to wait. It is very patient. And so close now.",
     ),
 ];
+/// Сколько реликвий брата спрятано в трёх актах (2 + 2 + 1).
+pub(crate) const QUEST_COUNT: usize = 5;
+/// Названия реликвий для субтитров находки (индекс - [`QuestItem::index`]).
+const QUEST_NAMES: [&str; QUEST_COUNT] = [
+    "A rusty toy car. Misha never let it go.",
+    "A child drawing: two brothers and a black dog.",
+    "A wool scarf. It still smells of snow.",
+    "A torn photo: father cut out of the frame.",
+    "A small mitten. The second one was lost that day.",
+];
+/// Дистанция автоподбора реликвии (по горизонтали), метры.
+const QUEST_PICKUP_RADIUS: f32 = 1.2;
+/// Дистанция дёргания рычага клавишей E (по горизонтали), метры.
+const LEVER_USE_RADIUS: f32 = 2.2;
 
 // ---------------------------------------------------------------------------
 // Компоненты
@@ -73,7 +89,19 @@ pub(crate) struct AudioCassette {
     pub(crate) lore_index: usize,
 }
 
-/// Маркер плашки субтитров (для удаления при рестарте и затирании).
+/// Личная вещь Миши: автоподбор, считается для хорошей концовки.
+#[derive(Component)]
+pub(crate) struct QuestItem {
+    pub(crate) index: usize,
+}
+
+/// Рычаг генератора (Акт 1): E рядом дёргает (один раз) - и ведёт в Акт 2.
+#[derive(Component)]
+pub(crate) struct GeneratorLever {
+    pub(crate) pulled: bool,
+}
+
+/// Маркер плашки субтитров (одна за раз - новая затирает старую).
 #[derive(Component)]
 pub(crate) struct SubtitleOverlay;
 
@@ -85,7 +113,7 @@ struct SubtitleTimer(Timer);
 // Плагин
 // ---------------------------------------------------------------------------
 
-/// Регистрирует подбор батареек, кассеты, парение и субтитры.
+/// Регистрирует подбор, E-взаимодействие, парение и субтитры.
 /// E-взаимодействие gated'ится разрешением ввода (на секунду скримера
 /// управление заблокировано, как и всё остальное).
 pub struct InteractionPlugin;
@@ -94,12 +122,19 @@ impl Plugin for InteractionPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (battery_pickup_system, bob_pickups, tick_subtitles)
-                .run_if(in_state(AppState::InGame)),
+            (
+                battery_pickup_system,
+                quest_pickup_system,
+                bob_pickups,
+                bob_quest,
+                tick_subtitles,
+            )
+                .run_if(crate::in_act),
         )
         .add_systems(
             Update,
-            cassette_interaction_system.run_if(crate::game_input_allowed),
+            (cassette_interaction_system, lever_interaction_system)
+                .run_if(crate::game_input_allowed),
         );
     }
 }
@@ -114,11 +149,7 @@ fn battery_pickup_system(
     players: Query<&Transform, With<Player>>,
     items: Query<(Entity, &Transform, &BatteryItem)>,
     mut lamps: Query<&mut Flashlight>,
-    progress: Res<GameProgress>,
 ) {
-    if progress.won || progress.dead {
-        return;
-    }
     for player in &players {
         for (entity, transform, item) in &items {
             let dx = player.translation.x - transform.translation.x;
@@ -141,6 +172,7 @@ fn cassette_interaction_system(
     keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
     assets: Res<AssetServer>,
+    game_state: Res<State<GameState>>,
     players: Query<&Transform, With<Player>>,
     mut tapes: Query<(&Transform, &mut AudioCassette)>,
     old_subtitles: Query<Entity, With<SubtitleOverlay>>,
@@ -148,6 +180,7 @@ fn cassette_interaction_system(
     if !keys.just_pressed(KeyCode::KeyE) {
         return;
     }
+    let act = *game_state.get();
     for player in &players {
         for (transform, mut tape) in &mut tapes {
             if tape.was_played {
@@ -164,7 +197,7 @@ fn cassette_interaction_system(
                 commands.spawn((
                     AudioPlayer::new(handle),
                     PlaybackSettings::DESPAWN.with_volume(Volume::Linear(1.0)),
-                    StateScoped(AppState::InGame),
+                    StateScoped(act),
                 ));
                 info!("Playing {}", tape.audio_path);
             } else {
@@ -177,15 +210,22 @@ fn cassette_interaction_system(
             for entity in &old_subtitles {
                 commands.entity(entity).despawn();
             }
-            spawn_subtitle(&mut commands, tape.lore_index);
+            let (title, body) = CASSETTE_LORE[tape.lore_index % CASSETTE_LORE.len()];
+            spawn_subtitle(&mut commands, title, body, SUBTITLE_SECS, act);
             return;
         }
     }
 }
 
-/// Субтитры кассеты: тёмная плашка с лором снизу экрана на несколько секунд.
-fn spawn_subtitle(commands: &mut Commands, lore_index: usize) {
-    let (title, body) = CASSETTE_LORE[lore_index % CASSETTE_LORE.len()];
+/// Субтитры: тёмная плашка снизу экрана на несколько секунд.
+/// Отправители: кассеты (лор), реликвии (находка), рычаг и акты (цели).
+pub(crate) fn spawn_subtitle(
+    commands: &mut Commands,
+    title: &str,
+    body: &str,
+    secs: f32,
+    act: GameState,
+) {
     commands
         .spawn((
             Node {
@@ -195,9 +235,9 @@ fn spawn_subtitle(commands: &mut Commands, lore_index: usize) {
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            SubtitleTimer(Timer::from_seconds(SUBTITLE_SECS, TimerMode::Once)),
+            SubtitleTimer(Timer::from_seconds(secs, TimerMode::Once)),
             SubtitleOverlay,
-            StateScoped(AppState::InGame),
+            StateScoped(act),
         ))
         .with_children(|root| {
             root.spawn((
@@ -216,7 +256,7 @@ fn spawn_subtitle(commands: &mut Commands, lore_index: usize) {
                 },
                 BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.75)),
                 SubtitleOverlay,
-                StateScoped(AppState::InGame),
+                StateScoped(act),
             ))
             .with_children(|panel| {
                 panel.spawn((
@@ -227,7 +267,7 @@ fn spawn_subtitle(commands: &mut Commands, lore_index: usize) {
                     },
                     TextColor(Color::srgb(0.95, 0.75, 0.4)),
                     SubtitleOverlay,
-                    StateScoped(AppState::InGame),
+                    StateScoped(act),
                 ));
                 panel.spawn((
                     Text::new(body),
@@ -237,7 +277,7 @@ fn spawn_subtitle(commands: &mut Commands, lore_index: usize) {
                     },
                     TextColor(Color::srgb(0.85, 0.83, 0.8)),
                     SubtitleOverlay,
-                    StateScoped(AppState::InGame),
+                    StateScoped(act),
                 ));
             });
         });
@@ -276,5 +316,101 @@ fn bob_pickups(
     for mut transform in &mut tapes {
         transform.translation.y = 0.30 + (t * 1.8 + transform.translation.z).sin() * 0.07;
         transform.rotation = Quat::from_rotation_y(t * 1.1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Реликвии брата и рычаг генератора
+// ---------------------------------------------------------------------------
+
+/// Подбор реликвий брата: счётчик для концовки + короткий субтитр находки.
+fn quest_pickup_system(
+    mut commands: Commands,
+    game_state: Res<State<GameState>>,
+    players: Query<&Transform, With<Player>>,
+    items: Query<(Entity, &Transform, &QuestItem)>,
+    old_subtitles: Query<Entity, With<SubtitleOverlay>>,
+    mut progress: ResMut<GameProgress>,
+) {
+    let act = *game_state.get();
+    for player in &players {
+        for (entity, transform, item) in &items {
+            let dx = player.translation.x - transform.translation.x;
+            let dz = player.translation.z - transform.translation.z;
+            if dx * dx + dz * dz < QUEST_PICKUP_RADIUS * QUEST_PICKUP_RADIUS {
+                commands.entity(entity).despawn();
+                progress.quest_items += 1;
+                let name = QUEST_NAMES[item.index % QUEST_COUNT];
+                // Новая находка - старые субтитры убираем (одна плашка за раз).
+                for entity in &old_subtitles {
+                    commands.entity(entity).despawn();
+                }
+                spawn_subtitle(
+                    &mut commands,
+                    &format!("KEEPSAKE {}/{} FOUND", progress.quest_items, QUEST_COUNT),
+                    name,
+                    3.0,
+                    act,
+                );
+                info!(
+                    "Keepsake found: {name} ({}/{QUEST_COUNT})",
+                    progress.quest_items
+                );
+            }
+        }
+    }
+}
+
+/// Рычаг генератора: E рядом дёргает (один раз - краснеет и зеленеет),
+/// через пару секунд - переход в Акт 2.
+fn lever_interaction_system(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+    game_state: Res<State<GameState>>,
+    players: Query<&Transform, With<Player>>,
+    mut levers: Query<(&Transform, &mut GeneratorLever, &MeshMaterial3d<StandardMaterial>)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    if !keys.just_pressed(KeyCode::KeyE) {
+        return;
+    }
+    let act = *game_state.get();
+    for player in &players {
+        for (transform, mut lever, mat) in &mut levers {
+            if lever.pulled {
+                continue;
+            }
+            let dx = player.translation.x - transform.translation.x;
+            let dz = player.translation.z - transform.translation.z;
+            if dx * dx + dz * dz > LEVER_USE_RADIUS * LEVER_USE_RADIUS {
+                continue;
+            }
+            lever.pulled = true;
+            if let Some(material) = materials.get_mut(&mat.0) {
+                material.base_color = Color::srgb(0.15, 0.7, 0.2);
+            }
+            commands.insert_resource(crate::PendingTransition {
+                timer: Timer::from_seconds(2.5, TimerMode::Once),
+                next: crate::GameState::Act2_TheInsanity,
+            });
+            spawn_subtitle(
+                &mut commands,
+                "THE GENERATOR ROARS",
+                "The lights stutter across the sector. Something shifts in the dark.",
+                4.0,
+                act,
+            );
+            info!("Generator lever pulled - Act 2 incoming");
+            return;
+        }
+    }
+}
+
+/// Парение и вращение реликвий (чисто визуальное).
+fn bob_quest(time: Res<Time>, mut query: Query<&mut Transform, With<QuestItem>>) {
+    let t = time.elapsed_secs();
+    for mut transform in &mut query {
+        transform.translation.y = 0.4 + (t * 2.0 + transform.translation.z).sin() * 0.08;
+        transform.rotation = Quat::from_rotation_y(t * 1.3);
     }
 }

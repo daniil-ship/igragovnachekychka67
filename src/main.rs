@@ -1,7 +1,7 @@
 //! «Эхо Забытых Стен» - психологический хоррор от первого лица.
 //!
-//! Точка входа: окно, глобальные состояния [`AppState`], подключение плагинов,
-//! главное меню, процедурный уровень-лабиринт, HUD и экран победы.
+//! Точка входа: окно, глобальные состояния [`GameState`], подключение плагинов,
+//! главное меню, три акта, HUD и экраны финалов.
 //!
 //! Архитектура (ECS, по модулям):
 //! - [`player`] - игрок: движение, стамина, принудительный бег, фонарик, HUD;
@@ -9,6 +9,7 @@
 //! - [`hallucinations`] - безумие и скримеры (PNG на весь экран + MP3).
 //! - [`atmosphere`] - лампы, туман, пыль, виньетка и зерно плёнки.
 //! - [`interaction`] - батарейки, кассеты, субтитры (Акт 2).
+//! - [`shadow`] - 3D-тень-скример и Тень-сталкер (монстр Актов 2-3).
 
 mod atmosphere;
 mod audio;
@@ -25,8 +26,8 @@ use audio::AudioDirectorPlugin;
 use bevy::prelude::*;
 use bevy::state::state_scoped::StateScoped;
 use bevy::window::{CursorGrabMode, WindowPlugin, WindowResolution};
-use hallucinations::{HallucinationsPlugin, Insanity, ScreamerOverlay, ScreamerState};
-use interaction::{AudioCassette, BatteryItem, InteractionPlugin, SubtitleOverlay};
+use hallucinations::{HallucinationsPlugin, Insanity, ScreamerState};
+use interaction::{AudioCassette, BatteryItem, GeneratorLever, InteractionPlugin, QuestItem};
 use player::{
     Flashlight, ForcedRun, InsanityVignette, Player, PlayerPlugin, Stamina, StaminaFill,
 };
@@ -45,10 +46,14 @@ pub const WALL_H: f32 = 3.2;
 /// Размер лабиринта в клетках (только НЕЧЁТНЫЕ числа - требование генератора).
 const MAZE_W: usize = 21;
 const MAZE_H: usize = 15;
-/// Сколько фрагментов эха нужно собрать для победы.
+/// Сколько фрагментов эха нужно собрать для перехода из Акта 2 в Акт 3.
 pub const FRAGMENT_COUNT: usize = 5;
 /// Дистанция сбора фрагмента (по горизонтали), метры.
 const PICKUP_RADIUS: f32 = 1.5;
+/// Сколько секунд даёт таймер реактора в Акте 3 (3 минуты до теплового взрыва).
+const REACTOR_SECS: f32 = 180.0;
+/// Радиус триггера лифта (Акт 3), метры.
+const ELEVATOR_RADIUS: f32 = 2.2;
 /// PNG-текстуры заброшки (пути внутри `assets/`). Если файла нет -
 /// используется процедурная текстура из [`textures`].
 pub const TEX_WALL_A: &str = "textures/wall1.png";
@@ -60,14 +65,22 @@ pub const TEX_CEIL: &str = "textures/ceil.png";
 // Состояния, ресурсы, компоненты уровня
 // ---------------------------------------------------------------------------
 
-/// Глобальные состояния игры.
+/// Глобальные состояния игры: меню, три акта, два финала.
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub(crate) enum AppState {
-    /// Главное меню (музыка `menu.mp3`).
+pub enum GameState {
+    /// Главное меню (музыка `menu.mp3`, фильм-нуар).
     #[default]
     MainMenu,
-    /// Игра (циклический амбиент, лабиринт, скримеры).
-    InGame,
+    /// Акт 1: спуск в Сектор Г, генератор, освоение.
+    Act1_TheDescent,
+    /// Акт 2: тьма, безумие, фрагменты, кассеты, Тень рядом.
+    Act2_TheInsanity,
+    /// Акт 3: реактор, 3 минуты, охота, лифт.
+    Act3_TheReactor,
+    /// Поражение: сердце, таймер или Поглощение.
+    GameOver,
+    /// Победа: Искупление.
+    GameWon,
 }
 
 /// Ось-выровненный бокс стены в плоскости XZ (для коллизий игрока).
@@ -85,20 +98,15 @@ pub struct LevelColliders {
     pub walls: Vec<WallAabb>,
 }
 
-/// Прогресс забега: собранные фрагменты и флаг победы.
+/// Прогресс забега: фрагменты Акта 2, реликвии брата и финал.
 #[derive(Resource)]
 pub struct GameProgress {
     pub collected: u32,
     pub total: u32,
-    pub won: bool,
-    /// Герой мёртв (25% в момент истощения стамины).
-    pub dead: bool,
-    /// Точки спавна фрагментов (для рестарта клавишей R).
-    pub fragment_spots: Vec<Vec3>,
-    /// Точки спавна батареек (для рестарта клавишей R).
-    pub battery_spots: Vec<Vec3>,
-    /// Точки спавна кассет + индекс лора (для рестарта клавишей R).
-    pub cassette_spots: Vec<(Vec3, usize)>,
+    /// Найденные личные вещи Миши (макс 5 - условие хорошей концовки).
+    pub quest_items: u32,
+    /// Чем закончился забег (заполняется при переходе в GameOver).
+    pub ending: Option<EndingKind>,
 }
 
 impl Default for GameProgress {
@@ -106,13 +114,34 @@ impl Default for GameProgress {
         Self {
             collected: 0,
             total: FRAGMENT_COUNT as u32,
-            won: false,
-            dead: false,
-            fragment_spots: Vec::new(),
-            battery_spots: Vec::new(),
-            cassette_spots: Vec::new(),
+            quest_items: 0,
+            ending: None,
         }
     }
+}
+
+/// Чем закончился забег (вариант экрана GameOver).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndingKind {
+    /// Сердце не выдержало (25% при истощении стамины).
+    HeartDeath,
+    /// Реактор взорвался раньше, чем герой дошёл до лифта.
+    Timeout,
+    /// Поглощение: в лифте без 5 реликвий.
+    Absorbed,
+}
+
+/// Отложенный переход между актами (рычаг/фрагменты дают пару секунд передышки).
+#[derive(Resource)]
+pub struct PendingTransition {
+    pub timer: Timer,
+    pub next: GameState,
+}
+
+/// Таймер реактора Акта 3: секунды до теплового взрыва.
+#[derive(Resource)]
+pub struct ReactorTimer {
+    pub time_left: f32,
 }
 
 /// Настройки из меню (живут всю сессию, между состояниями не сбрасываются).
@@ -133,17 +162,17 @@ impl Default for GameSettings {
     }
 }
 
-/// Светящийся фрагмент эха - цель забега (5 штук в дальних углах лабиринта).
+/// Светящийся фрагмент эха - цель Акта 2 (5 штук в дальних клетках лабиринта).
 #[derive(Component)]
 struct EchoFragment;
 
-/// Маркер оверлея победы (для удаления при рестарте).
+/// Лифт - цель Акта 3 (триггер финала).
 #[derive(Component)]
-struct WinOverlay;
+struct Elevator;
 
-/// Маркер оверлея смерти (для удаления при рестарте).
+/// Маркер заливки тонкой красной полоски таймера реактора (HUD Акта 3).
 #[derive(Component)]
-struct DeathOverlay;
+struct MeltdownFill;
 
 /// Маркер мигающей подсказки в меню.
 #[derive(Component)]
@@ -181,10 +210,10 @@ fn main() {
         .insert_resource(LevelColliders::default())
         .insert_resource(GameProgress::default())
         .insert_resource(GameSettings::default())
-        .init_state::<AppState>()
+        .init_state::<GameState>()
         // В Bevy 0.16 state-scoped сущности включаются явно,
         // иначе маркеры StateScoped не будут ничего удалять.
-        .enable_state_scoped_entities::<AppState>()
+        .enable_state_scoped_entities::<GameState>()
         .add_plugins((
             PlayerPlugin,
             AudioDirectorPlugin,
@@ -196,19 +225,45 @@ fn main() {
         // Холодный тусклый свет окружения.
         .add_systems(Startup, setup_ambient_light)
         // Главное меню.
-        .add_systems(OnEnter(AppState::MainMenu), setup_menu)
+        .add_systems(OnEnter(GameState::MainMenu), setup_menu)
         .add_systems(
             Update,
-            (menu_input, blink_menu_prompt, settings_buttons).run_if(in_state(AppState::MainMenu)),
+            (menu_input, blink_menu_prompt, settings_buttons).run_if(in_state(GameState::MainMenu)),
         )
-        // Игра: генерация, HUD, курсор, сбор фрагментов, победа, выход.
-        .add_systems(OnEnter(AppState::InGame), (generate_level, setup_hud, grab_cursor))
+        // Акты: сброс забега (только Акт 1), генерация, HUD, курсор.
+        .add_systems(
+            OnEnter(GameState::Act1_TheDescent),
+            (reset_run, generate_level, setup_hud, grab_cursor),
+        )
+        .add_systems(
+            OnEnter(GameState::Act2_TheInsanity),
+            (generate_level, setup_hud, grab_cursor),
+        )
+        .add_systems(
+            OnEnter(GameState::Act3_TheReactor),
+            (reset_reactor, generate_level, setup_hud, grab_cursor),
+        )
+        // Игровые системы актов.
         .add_systems(
             Update,
-            (collect_fragments, restart_input, escape_to_menu, bob_fragments)
-                .run_if(in_state(AppState::InGame)),
+            (
+                collect_fragments,
+                tick_transition,
+                tick_reactor,
+                elevator_trigger,
+                escape_to_menu,
+                restart_run,
+                bob_fragments,
+            )
+                .run_if(in_act),
         )
-        .add_systems(OnExit(AppState::InGame), release_cursor)
+        // Финалы: экран, курсор, ввод. Потеря фокуса тоже отпускает мышь.
+        .add_systems(OnEnter(GameState::GameOver), (setup_end_screen, release_cursor))
+        .add_systems(OnEnter(GameState::GameWon), (setup_end_screen, release_cursor))
+        .add_systems(Update, (escape_to_menu, restart_run).run_if(in_end))
+        .add_systems(OnExit(GameState::Act1_TheDescent), release_cursor)
+        .add_systems(OnExit(GameState::Act2_TheInsanity), release_cursor)
+        .add_systems(OnExit(GameState::Act3_TheReactor), release_cursor)
         .run();
 }
 
@@ -257,14 +312,26 @@ fn ensure_asset_root() {
     );
 }
 
-/// Run-условие «управление игрока разрешено»: мы в игре, скример не активен
-/// (его секунда блокирует ввод) и забег ещё не выигран.
-pub fn game_input_allowed(
-    state: Res<State<AppState>>,
-    screamer: Res<ScreamerState>,
-    progress: Res<GameProgress>,
-) -> bool {
-    *state.get() == AppState::InGame && !screamer.active && !progress.won && !progress.dead
+/// Run-условие «идёт игровой акт» (любой из трёх).
+pub fn in_act(state: Res<State<GameState>>) -> bool {
+    matches!(
+        state.get(),
+        GameState::Act1_TheDescent | GameState::Act2_TheInsanity | GameState::Act3_TheReactor
+    )
+}
+
+/// Run-условие «экран финала» (поражение или победа).
+pub fn in_end(state: Res<State<GameState>>) -> bool {
+    matches!(state.get(), GameState::GameOver | GameState::GameWon)
+}
+
+/// Run-условие «управление игрока разрешено»: идёт акт и секунда скримера
+/// не блокирует ввод. Состояния-финалы управление выключают сами.
+pub fn game_input_allowed(state: Res<State<GameState>>, screamer: Res<ScreamerState>) -> bool {
+    matches!(
+        state.get(),
+        GameState::Act1_TheDescent | GameState::Act2_TheInsanity | GameState::Act3_TheReactor
+    ) && !screamer.active
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +362,7 @@ fn setup_menu(
         window.cursor_options.visible = true;
     }
 
-    commands.spawn((Camera2d, StateScoped(AppState::MainMenu)));
+    commands.spawn((Camera2d, StateScoped(GameState::MainMenu)));
 
     commands
         .spawn((
@@ -309,7 +376,7 @@ fn setup_menu(
                 ..default()
             },
             BackgroundColor(Color::srgb(0.012, 0.004, 0.006)),
-            StateScoped(AppState::MainMenu),
+            StateScoped(GameState::MainMenu),
         ))
         .with_children(|parent| {
             parent.spawn((
@@ -319,7 +386,7 @@ fn setup_menu(
                     ..default()
                 },
                 TextColor(Color::srgb(0.72, 0.08, 0.08)),
-                StateScoped(AppState::MainMenu),
+                StateScoped(GameState::MainMenu),
             ));
             parent.spawn((
                 Text::new("A PSYCHOLOGICAL HORROR"),
@@ -328,7 +395,16 @@ fn setup_menu(
                     ..default()
                 },
                 TextColor(Color::srgb(0.45, 0.42, 0.45)),
-                StateScoped(AppState::MainMenu),
+                StateScoped(GameState::MainMenu),
+            ));
+            parent.spawn((
+                Text::new("ARTHUR, 34, ARCHIVIST - ARCHIVE-404, FINAL INVENTORY"),
+                TextFont {
+                    font_size: 16.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.55, 0.55, 0.58)),
+                StateScoped(GameState::MainMenu),
             ));
             parent.spawn((
                 Text::new("PRESS ENTER OR CLICK TO BEGIN"),
@@ -338,22 +414,21 @@ fn setup_menu(
                 },
                 TextColor(Color::srgb(0.85, 0.8, 0.78)),
                 MenuPrompt,
-                StateScoped(AppState::MainMenu),
+                StateScoped(GameState::MainMenu),
             ));
             parent.spawn((
                 Text::new(
-                    "WASD / ARROWS - MOVE      MOUSE - LOOK\n\
-                     SHIFT - RUN (DRAINS STAMINA)\n\
-                     BEWARE: RUNNING ON EMPTY STAMINA FEEDS YOUR MADNESS\n\
-                     FIND 5 ECHO FRAGMENTS TO ESCAPE      ESC - MENU\n\
-                     F - FLASHLIGHT (DRAINS BATTERY)      E - PLAY TAPES      DARKNESS FEEDS MADNESS",
+                    "WASD / ARROWS - MOVE      MOUSE - LOOK      SHIFT - RUN\n\
+                     F - FLASHLIGHT (DRAINS BATTERY)      E - USE      R - RESTART RUN\n\
+                     ACT 1: PULL THE GENERATOR LEVER - ACT 2: 5 ECHO FRAGMENTS - ACT 3: REACH THE LIFT\n\
+                     DARKNESS FEEDS MADNESS - BATTERIES SAVE LIGHT - FIND 5 KEEPSAKES FOR THE GOOD END",
                 ),
                 TextFont {
                     font_size: 18.0,
                     ..default()
                 },
                 TextColor(Color::srgb(0.5, 0.48, 0.5)),
-                StateScoped(AppState::MainMenu),
+                StateScoped(GameState::MainMenu),
             ));
             parent.spawn((
                 Text::new("HEADPHONES RECOMMENDED"),
@@ -362,7 +437,7 @@ fn setup_menu(
                     ..default()
                 },
                 TextColor(Color::srgb(0.5, 0.12, 0.12)),
-                StateScoped(AppState::MainMenu),
+                StateScoped(GameState::MainMenu),
             ));
             // Настройки экрана: кнопки-переключатели (клик по ним не стартует игру).
             parent.spawn((
@@ -372,7 +447,7 @@ fn setup_menu(
                     ..default()
                 },
                 TextColor(Color::srgb(0.6, 0.55, 0.55)),
-                StateScoped(AppState::MainMenu),
+                StateScoped(GameState::MainMenu),
             ));
             for action in [SettingsAction::ToggleGrain, SettingsAction::ToggleVignette] {
                 parent
@@ -391,7 +466,7 @@ fn setup_menu(
                         },
                         BackgroundColor(Color::srgb(0.10, 0.05, 0.06)),
                         action,
-                        StateScoped(AppState::MainMenu),
+                        StateScoped(GameState::MainMenu),
                     ))
                     .with_children(|button| {
                         button.spawn((
@@ -402,7 +477,7 @@ fn setup_menu(
                             },
                             TextColor(Color::srgb(0.85, 0.8, 0.78)),
                             SettingsLabel(action),
-                            StateScoped(AppState::MainMenu),
+                            StateScoped(GameState::MainMenu),
                         ));
                     });
             }
@@ -414,10 +489,10 @@ fn menu_input(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     buttons: Query<&Interaction, With<Button>>,
-    mut next_state: ResMut<NextState<AppState>>,
+    mut next_state: ResMut<NextState<GameState>>,
 ) {
     if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
-        next_state.set(AppState::InGame);
+        next_state.set(GameState::Act1_TheDescent);
         return;
     }
     if mouse.just_pressed(MouseButton::Left) {
@@ -425,7 +500,7 @@ fn menu_input(
             .iter()
             .any(|i| *i == Interaction::Hovered || *i == Interaction::Pressed);
         if !on_button {
-            next_state.set(AppState::InGame);
+            next_state.set(GameState::Act1_TheDescent);
         }
     }
 }
@@ -581,9 +656,9 @@ fn texture_or_fallback(
     }
 }
 
-/// Построение уровня при входе в игру: пол, потолок, стены, игрок с
-/// фонариком и 5 фрагментов эха в дальних клетках. Каждый забег - новый
-/// случайный лабиринт.
+/// Построение уровня при входе в акт: пол, потолок, стены, игрок с
+/// фонариком и содержимое по акту (рычаг, фрагменты, кассеты, лифт,
+/// реликвии, Тень). Каждый акт - новый случайный лабиринт.
 fn generate_level(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -591,17 +666,11 @@ fn generate_level(
     mut images: ResMut<Assets<Image>>,
     assets: Res<AssetServer>,
     mut colliders: ResMut<LevelColliders>,
-    mut progress: ResMut<GameProgress>,
+    state: Res<State<GameState>>,
 ) {
-    // Сброс состояния забега (важно при повторном входе из меню).
+    // Сброс коллайдеров (прогресс забега сбрасывает `reset_run` на входе в Акт 1).
     colliders.walls.clear();
-    progress.collected = 0;
-    progress.won = false;
-    progress.dead = false;
-    progress.total = FRAGMENT_COUNT as u32;
-    progress.fragment_spots.clear();
-    progress.battery_spots.clear();
-    progress.cassette_spots.clear();
+    let act = *state.get();
 
     let maze = generate_maze(MAZE_W, MAZE_H);
 
@@ -652,13 +721,13 @@ fn generate_level(
                     Mesh3d(meshes.add(Cuboid::new(CELL, 0.2, CELL))),
                     MeshMaterial3d(floor_mat.clone()),
                     Transform::from_xyz(x, -0.1, z),
-                    StateScoped(AppState::InGame),
+                    StateScoped(act),
                 ));
                 commands.spawn((
                     Mesh3d(meshes.add(Cuboid::new(CELL, 0.2, CELL))),
                     MeshMaterial3d(ceil_mat.clone()),
                     Transform::from_xyz(x, WALL_H + 0.1, z),
-                    StateScoped(AppState::InGame),
+                    StateScoped(act),
                 ));
                 continue;
             }
@@ -671,7 +740,7 @@ fn generate_level(
                 Mesh3d(meshes.add(Cuboid::new(CELL, WALL_H, CELL))),
                 MeshMaterial3d(mat),
                 Transform::from_xyz(x, WALL_H / 2.0, z),
-                StateScoped(AppState::InGame),
+                StateScoped(act),
             ));
             colliders.walls.push(WallAabb {
                 min_x: x - CELL / 2.0,
@@ -689,6 +758,7 @@ fn generate_level(
         &mut materials,
         &mut images,
         &maze,
+        act,
     );
 
     // Игрок в клетке (1, 1): смотрим в открытый проход -
@@ -719,7 +789,7 @@ fn generate_level(
             Stamina::default(),
             ForcedRun(false),
             Insanity(0.0),
-            StateScoped(AppState::InGame),
+            StateScoped(act),
         ))
         .with_children(|parent| {
             // Фонарик - спотлайт, ребёнок камеры (светит туда же, куда смотрим).
@@ -727,9 +797,9 @@ fn generate_level(
                 SpotLight {
                     color: Color::srgb(1.0, 0.95, 0.85),
                     intensity: player::FLASHLIGHT_INTENSITY,
-                    range: 32.0,
+                    range: player::FLASHLIGHT_RANGE,
                     inner_angle: 0.22,
-                    outer_angle: 0.55,
+                    outer_angle: player::FLASHLIGHT_OUTER_ANGLE,
                     shadows_enabled: true,
                     ..default()
                 },
@@ -739,62 +809,160 @@ fn generate_level(
                     is_on: true,
                     battery: Flashlight::MAX_BATTERY,
                 },
-                StateScoped(AppState::InGame),
+                StateScoped(act),
             ));
         });
 
-    // Фрагменты эха: случайные клетки пола вдалеке от спавна.
+    // --- Содержимое актов: батарейки в каждом, остальное - по акту ---
     let mut rng = rand::thread_rng();
-    let mut candidates: Vec<(usize, usize)> = Vec::new();
+    let mut floor_cells: Vec<(usize, usize)> = Vec::new();
     for (cy, row) in maze.iter().enumerate() {
         for (cx, &is_wall) in row.iter().enumerate() {
-            if is_wall {
-                continue;
-            }
-            if cx.abs_diff(1) + cy.abs_diff(1) >= 14 {
-                candidates.push((cx, cy));
+            if !is_wall {
+                floor_cells.push((cx, cy));
             }
         }
     }
-    if candidates.len() < FRAGMENT_COUNT {
-        // Лабиринт тесный - fallback: просто самые дальние клетки пола.
-        let mut all: Vec<(usize, usize)> = Vec::new();
-        for (cy, row) in maze.iter().enumerate() {
-            for (cx, &is_wall) in row.iter().enumerate() {
-                if !is_wall {
-                    all.push((cx, cy));
+    // Батарейки есть в каждом акте (в третьем - последние крохи).
+    let battery_count = match act {
+        GameState::Act3_TheReactor => 4,
+        _ => interaction::BATTERY_COUNT,
+    };
+    for _ in 0..battery_count {
+        if let Some(&(cx, cy)) = floor_cells.choose(&mut rng) {
+            let (x, z) = cell_center(cx, cy);
+            spawn_battery(
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                Vec3::new(x, 0.0, z),
+                act,
+            );
+        }
+    }
+    match act {
+        GameState::Act1_TheDescent => {
+            // Рычаг генератора в глубине сектора + две первые реликвии брата.
+            if let Some(spot) = random_floor_spot(&mut rng, &floor_cells, 6) {
+                spawn_lever(&mut commands, &mut meshes, &mut materials, spot, act);
+            }
+            for index in 0..2 {
+                if let Some(spot) = random_floor_spot(&mut rng, &floor_cells, 0) {
+                    spawn_quest_item(
+                        &mut commands,
+                        &mut meshes,
+                        &mut materials,
+                        spot,
+                        index,
+                        act,
+                    );
                 }
             }
+            interaction::spawn_subtitle(
+                &mut commands,
+                "ACT 1 - THE DESCENT",
+                "Sector G. The blast door seals behind you. Find the generator lever and get the lights back.",
+                7.0,
+                act,
+            );
         }
-        all.sort_by_key(|&(cx, cy)| {
-            std::cmp::Reverse(cx.abs_diff(1) + cy.abs_diff(1))
-        });
-        candidates = all.into_iter().take(FRAGMENT_COUNT).collect();
-    }
-    candidates.shuffle(&mut rng);
-    for &(cx, cy) in candidates.iter().take(FRAGMENT_COUNT) {
-        let (x, z) = cell_center(cx, cy);
-        let spot = Vec3::new(x, 0.0, z);
-        progress.fragment_spots.push(spot);
-        spawn_fragment(&mut commands, &mut meshes, &mut materials, spot);
+        GameState::Act2_TheInsanity => {
+            // 5 фрагментов эха в дальних от спавна клетках.
+            let mut candidates: Vec<(usize, usize)> = floor_cells
+                .iter()
+                .copied()
+                .filter(|&(cx, cy)| cx.abs_diff(1) + cy.abs_diff(1) >= 14)
+                .collect();
+            if candidates.len() < FRAGMENT_COUNT {
+                // Лабиринт тесный - fallback: просто самые дальние клетки пола.
+                let mut all = floor_cells.clone();
+                all.sort_by_key(|&(cx, cy)| {
+                    std::cmp::Reverse(cx.abs_diff(1) + cy.abs_diff(1))
+                });
+                candidates = all.into_iter().take(FRAGMENT_COUNT).collect();
+            }
+            candidates.shuffle(&mut rng);
+            for &(cx, cy) in candidates.iter().take(FRAGMENT_COUNT) {
+                let (x, z) = cell_center(cx, cy);
+                spawn_fragment(
+                    &mut commands,
+                    &mut meshes,
+                    &mut materials,
+                    Vec3::new(x, 0.0, z),
+                    act,
+                );
+            }
+            // 3 кассеты с записями профессора - подальше от входа.
+            for lore in 0..interaction::CASSETTE_COUNT {
+                if let Some(spot) = random_floor_spot(&mut rng, &floor_cells, 8) {
+                    spawn_cassette(
+                        &mut commands,
+                        &mut meshes,
+                        &mut materials,
+                        spot,
+                        lore,
+                        act,
+                    );
+                }
+            }
+            // Реликвии 3-4 и Тень на патрулировании.
+            for index in 2..4 {
+                if let Some(spot) = random_floor_spot(&mut rng, &floor_cells, 0) {
+                    spawn_quest_item(
+                        &mut commands,
+                        &mut meshes,
+                        &mut materials,
+                        spot,
+                        index,
+                        act,
+                    );
+                }
+            }
+            if let Some(spot) = random_floor_spot(&mut rng, &floor_cells, 10) {
+                shadow::spawn_monster(&mut commands, &mut meshes, &mut materials, spot, act);
+            }
+            interaction::spawn_subtitle(
+                &mut commands,
+                "ACT 2 - REJECTION",
+                "Only the red emergency light remains. Collect 5 echo fragments. Do not let your torch die.",
+                7.0,
+                act,
+            );
+        }
+        GameState::Act3_TheReactor => {
+            // Лифт - в самой дальней от спавна клетке.
+            if let Some(&(cx, cy)) = floor_cells
+                .iter()
+                .max_by_key(|&&(cx, cy)| cx.abs_diff(1) + cy.abs_diff(1))
+            {
+                let (x, z) = cell_center(cx, cy);
+                spawn_elevator(
+                    &mut commands,
+                    &mut meshes,
+                    &mut materials,
+                    Vec3::new(x, 0.0, z),
+                    act,
+                );
+            }
+            // Последняя реликвия и Тень на охоте.
+            if let Some(spot) = random_floor_spot(&mut rng, &floor_cells, 0) {
+                spawn_quest_item(&mut commands, &mut meshes, &mut materials, spot, 4, act);
+            }
+            if let Some(spot) = random_floor_spot(&mut rng, &floor_cells, 10) {
+                shadow::spawn_monster(&mut commands, &mut meshes, &mut materials, spot, act);
+            }
+            interaction::spawn_subtitle(
+                &mut commands,
+                "ACT 3 - THE REACTOR",
+                "Three minutes to meltdown. All lights are dead. Reach the lift - and hold your light on the shadow.",
+                8.0,
+                act,
+            );
+        }
+        _ => {}
     }
 
-    // Акт 2: батарейки и кассеты по случайным клеткам пола.
-    spawn_act2_pickups(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &maze,
-        &mut progress,
-    );
-
-    info!(
-        "Level generated: {} walls, {} fragments, {} batteries, {} cassettes",
-        colliders.walls.len(),
-        progress.fragment_spots.len(),
-        progress.battery_spots.len(),
-        progress.cassette_spots.len()
-    );
+    info!("Level generated for {act:?}: {} walls", colliders.walls.len());
 }
 
 /// Спавн одного фрагмента эха: светящаяся сфера + точечный свет.
@@ -803,6 +971,7 @@ fn spawn_fragment(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     spot: Vec3,
+    act: GameState,
 ) {
     commands.spawn((
         Mesh3d(meshes.add(Sphere::new(0.28).mesh().uv(24, 16))),
@@ -819,7 +988,7 @@ fn spawn_fragment(
             ..default()
         },
         EchoFragment,
-        StateScoped(AppState::InGame),
+        StateScoped(act),
     ));
 }
 
@@ -829,6 +998,7 @@ fn spawn_battery(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
     spot: Vec3,
+    act: GameState,
 ) {
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(0.14, 0.22, 0.14))),
@@ -841,7 +1011,7 @@ fn spawn_battery(
         BatteryItem {
             recharge_amount: interaction::BATTERY_RECHARGE,
         },
-        StateScoped(AppState::InGame),
+        StateScoped(act),
     ));
 }
 
@@ -853,6 +1023,7 @@ fn spawn_cassette(
     materials: &mut ResMut<Assets<StandardMaterial>>,
     spot: Vec3,
     lore_index: usize,
+    act: GameState,
 ) {
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(0.26, 0.05, 0.16))),
@@ -869,52 +1040,127 @@ fn spawn_cassette(
             was_played: false,
             lore_index,
         },
-        StateScoped(AppState::InGame),
+        StateScoped(act),
     ));
 }
 
-/// Акт 2: разброс батареек и кассет по случайным клеткам пола + запоминание
-/// точек для рестарта. Кассеты - подальше от спавна (награда за исследование).
-fn spawn_act2_pickups(
+// ---------------------------------------------------------------------------
+// Спавн объектов актов: рычаг, реликвии, лифт
+// ---------------------------------------------------------------------------
+
+/// Случайная клетка пола не ближе `min_dist` (по Манхэттену от спавна (1, 1)).
+/// Если подходящих нет - любая клетка пола.
+fn random_floor_spot(
+    rng: &mut rand::rngs::ThreadRng,
+    floor: &[(usize, usize)],
+    min_dist: usize,
+) -> Option<Vec3> {
+    let pool: Vec<(usize, usize)> = floor
+        .iter()
+        .copied()
+        .filter(|&(cx, cy)| cx.abs_diff(1) + cy.abs_diff(1) >= min_dist)
+        .collect();
+    let source: &[(usize, usize)] = if pool.is_empty() { floor } else { &pool };
+    source.choose(rng).map(|&(cx, cy)| {
+        let (x, z) = cell_center(cx, cy);
+        Vec3::new(x, 0.0, z)
+    })
+}
+
+/// Спавн рычага генератора (Акт 1): красный брусок на уровне пояса.
+fn spawn_lever(
     commands: &mut Commands,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<StandardMaterial>>,
-    maze: &[Vec<bool>],
-    progress: &mut GameProgress,
+    spot: Vec3,
+    act: GameState,
 ) {
-    let mut rng = rand::thread_rng();
-    let mut floor: Vec<(usize, usize)> = Vec::new();
-    for (cy, row) in maze.iter().enumerate() {
-        for (cx, &is_wall) in row.iter().enumerate() {
-            if !is_wall {
-                floor.push((cx, cy));
-            }
-        }
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(0.3, 0.5, 0.3))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.7, 0.08, 0.06),
+            unlit: true,
+            ..default()
+        })),
+        Transform::from_translation(spot + Vec3::new(0.0, 0.55, 0.0)),
+        GeneratorLever { pulled: false },
+        StateScoped(act),
+    ));
+}
+
+/// Спавн реликвии брата (золотая сфера, `index` 0..5 - какая вещь).
+fn spawn_quest_item(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    spot: Vec3,
+    index: usize,
+    act: GameState,
+) {
+    commands.spawn((
+        Mesh3d(meshes.add(Sphere::new(0.12).mesh().uv(16, 12))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.95, 0.75, 0.3),
+            unlit: true,
+            ..default()
+        })),
+        Transform::from_translation(spot + Vec3::new(0.0, 0.4, 0.0)),
+        QuestItem { index },
+        StateScoped(act),
+    ));
+}
+
+/// Спавн лифта (Акт 3): светящийся портал с ярким светом-маяком.
+fn spawn_elevator(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    spot: Vec3,
+    act: GameState,
+) {
+    // Задняя светящаяся панель.
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(2.4, 3.0, 0.3))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.92, 0.95, 1.0),
+            unlit: true,
+            ..default()
+        })),
+        Transform::from_translation(spot + Vec3::new(0.0, 1.5, 0.0)),
+        Elevator,
+        StateScoped(act),
+    ));
+    // Тёмная рама: два столба и балка.
+    let frame = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.05, 0.05, 0.07),
+        perceptual_roughness: 0.9,
+        ..default()
+    });
+    for side in [-1.0f32, 1.0] {
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(0.3, 3.2, 0.5))),
+            MeshMaterial3d(frame.clone()),
+            Transform::from_translation(spot + Vec3::new(1.35 * side, 1.6, 0.0)),
+            StateScoped(act),
+        ));
     }
-    // Батарейки: где угодно на полу.
-    for _ in 0..interaction::BATTERY_COUNT {
-        if let Some(&(cx, cy)) = floor.choose(&mut rng) {
-            let (x, z) = cell_center(cx, cy);
-            let spot = Vec3::new(x, 0.0, z);
-            progress.battery_spots.push(spot);
-            spawn_battery(commands, meshes, materials, spot);
-        }
-    }
-    // Кассеты: подальше от спавна, каждая со своим лором.
-    let far: Vec<(usize, usize)> = floor
-        .iter()
-        .copied()
-        .filter(|&(cx, cy)| cx.abs_diff(1) + cy.abs_diff(1) >= 8)
-        .collect();
-    let pool = if far.is_empty() { &floor } else { &far };
-    for i in 0..interaction::CASSETTE_COUNT {
-        if let Some(&(cx, cy)) = pool.choose(&mut rng) {
-            let (x, z) = cell_center(cx, cy);
-            let spot = Vec3::new(x, 0.0, z);
-            progress.cassette_spots.push((spot, i));
-            spawn_cassette(commands, meshes, materials, spot, i);
-        }
-    }
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(3.0, 0.3, 0.5))),
+        MeshMaterial3d(frame.clone()),
+        Transform::from_translation(spot + Vec3::new(0.0, 3.2, 0.0)),
+        StateScoped(act),
+    ));
+    // Яркий свет-маяк над порталом (видно издалека даже во тьме).
+    commands.spawn((
+        PointLight {
+            color: Color::srgb(0.9, 0.95, 1.0),
+            intensity: 150_000.0,
+            range: 22.0,
+            ..default()
+        },
+        Transform::from_translation(spot + Vec3::new(0.0, 2.2, 0.0)),
+        StateScoped(act),
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -928,7 +1174,9 @@ fn setup_hud(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     settings: Res<GameSettings>,
+    state: Res<State<GameState>>,
 ) {
+    let act = *state.get();
     // Виньетка безумия - первой, чтобы лежать ПОД остальным HUD.
     commands.spawn((
         Node {
@@ -938,7 +1186,7 @@ fn setup_hud(
         },
         BackgroundColor(Color::srgba(0.55, 0.02, 0.03, 0.0)),
         InsanityVignette,
-        StateScoped(AppState::InGame),
+        StateScoped(act),
     ));
 
     // Панель стамины (снизу по центру): только маленькая тусклая полоска.
@@ -951,7 +1199,7 @@ fn setup_hud(
                 justify_content: JustifyContent::Center,
                 ..default()
             },
-            StateScoped(AppState::InGame),
+            StateScoped(act),
         ))
         .with_children(|parent| {
             parent
@@ -962,7 +1210,7 @@ fn setup_hud(
                         row_gap: Val::Px(6.0),
                         ..default()
                     },
-                    StateScoped(AppState::InGame),
+                    StateScoped(act),
                 ))
                 .with_children(|panel| {
                     panel
@@ -973,7 +1221,7 @@ fn setup_hud(
                                 ..default()
                             },
                             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.45)),
-                            StateScoped(AppState::InGame),
+                            StateScoped(act),
                         ))
                         .with_children(|bar| {
                             bar.spawn((
@@ -984,28 +1232,69 @@ fn setup_hud(
                                 },
                                 BackgroundColor(Color::srgb(0.25, 0.45, 0.15)),
                                 StaminaFill,
-                                StateScoped(AppState::InGame),
+                                StateScoped(act),
                             ));
                         });
                 });
         });
 
     // Постоянная тёмная виньетка + зерно плёнки поверх остального HUD.
-    atmosphere::spawn_cinematic_overlays(&mut commands, &mut images, &settings);
+    // Акт 3: тонкая красная полоска таймера реактора над стаминой.
+    if act == GameState::Act3_TheReactor {
+        commands
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    bottom: Val::Px(42.0),
+                    width: Val::Percent(100.0),
+                    justify_content: JustifyContent::Center,
+                    ..default()
+                },
+                StateScoped(act),
+            ))
+            .with_children(|parent| {
+                parent
+                    .spawn((
+                        Node {
+                            width: Val::Px(150.0),
+                            height: Val::Px(5.0),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgba(0.25, 0.02, 0.02, 0.55)),
+                        StateScoped(act),
+                    ))
+                    .with_children(|bar| {
+                        bar.spawn((
+                            Node {
+                                width: Val::Percent(100.0),
+                                height: Val::Percent(100.0),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.75, 0.08, 0.06, 0.8)),
+                            MeltdownFill,
+                            StateScoped(act),
+                        ));
+                    });
+            });
+    }
+
+    atmosphere::spawn_cinematic_overlays(&mut commands, &mut images, &settings, act);
 }
 
 // ---------------------------------------------------------------------------
-// Фрагменты, победа, выход
+// Фрагменты, переходы, реактор, лифт, финалы
 // ---------------------------------------------------------------------------
 
-/// Подбор фрагментов при приближении. Когда собраны все - победа.
+/// Подбор фрагментов (Акт 2). Когда собраны все - сирена и переход в Акт 3.
 fn collect_fragments(
     mut commands: Commands,
+    state: Res<State<GameState>>,
     players: Query<&Transform, With<Player>>,
     fragments: Query<(Entity, &Transform), With<EchoFragment>>,
     mut progress: ResMut<GameProgress>,
+    transition: Option<ResMut<PendingTransition>>,
 ) {
-    if progress.won || progress.dead {
+    if transition.is_some() || progress.collected >= progress.total {
         return;
     }
     for player in &players {
@@ -1023,93 +1312,186 @@ fn collect_fragments(
         }
     }
     if progress.collected >= progress.total {
-        progress.won = true;
-        spawn_win_overlay(&mut commands);
-        info!("YOU ESCAPED THE ECHO");
+        commands.insert_resource(PendingTransition {
+            timer: Timer::from_seconds(2.5, TimerMode::Once),
+            next: GameState::Act3_TheReactor,
+        });
+        interaction::spawn_subtitle(
+            &mut commands,
+            "THE REACTOR IS GOING CRITICAL",
+            "Emergency overload started. Everything goes dark in seconds. RUN.",
+            4.0,
+            *state.get(),
+        );
+        info!("All fragments - the reactor wakes");
     }
 }
 
-/// Оверлей победы: затемнение + табличка.
-/// Каждый элемент помечен отдельно, чтобы удаление было надёжным.
-fn spawn_win_overlay(commands: &mut Commands) {
-    commands
-        .spawn((
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.78)),
-            WinOverlay,
-            StateScoped(AppState::InGame),
-        ))
-        .with_children(|parent| {
-            parent
-                .spawn((
-                    Node {
-                        flex_direction: FlexDirection::Column,
-                        align_items: AlignItems::Center,
-                        row_gap: Val::Px(14.0),
-                        padding: UiRect {
-                            left: Val::Px(56.0),
-                            right: Val::Px(56.0),
-                            top: Val::Px(40.0),
-                            bottom: Val::Px(40.0),
-                        },
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgb(0.03, 0.02, 0.025)),
-                    WinOverlay,
-                    StateScoped(AppState::InGame),
-                ))
-                .with_children(|panel| {
-                    panel.spawn((
-                        Text::new("YOU ESCAPED THE ECHO"),
-                        TextFont {
-                            font_size: 46.0,
-                            ..default()
-                        },
-                        TextColor(Color::srgb(0.8, 0.85, 0.9)),
-                        WinOverlay,
-                        StateScoped(AppState::InGame),
-                    ));
-                    panel.spawn((
-                        Text::new("R - PLAY AGAIN      ESC - MENU"),
-                        TextFont {
-                            font_size: 24.0,
-                            ..default()
-                        },
-                        TextColor(Color::srgb(0.55, 0.55, 0.6)),
-                        WinOverlay,
-                        StateScoped(AppState::InGame),
-                    ));
-                });
-        });
-}
+// ---------------------------------------------------------------------------
+// Забег: сброс, переходы между актами, реактор, лифт, рестарт
+// ---------------------------------------------------------------------------
 
-/// Сброс состояния скриммеров при входе в игру. Защита от «залипания»
-/// флага активности, если игрок вышел в меню прямо во время скримера.
-fn reset_screamer_state(mut screamer: ResMut<ScreamerState>) {
+/// Сброс забега при входе в Акт 1 (каждый вход в Акт 1 - новый забег):
+/// прогресс, скримеры, отложенный переход, свет окружения.
+fn reset_run(
+    mut commands: Commands,
+    mut progress: ResMut<GameProgress>,
+    mut screamer: ResMut<ScreamerState>,
+    mut ambient: ResMut<AmbientLight>,
+) {
+    *progress = GameProgress::default();
     screamer.full_reset();
+    commands.remove_resource::<PendingTransition>();
+    ambient.color = Color::srgb(0.5, 0.58, 0.75);
+    ambient.brightness = 0.09;
 }
 
-/// Оверлей смерти: красное затемнение + табличка "YOU DIED".
-/// Вызывается из системы стамины в момент смертельного истощения.
-fn spawn_death_overlay(commands: &mut Commands) {
+/// Взвод таймера реактора при входе в Акт 3.
+fn reset_reactor(mut commands: Commands) {
+    commands.insert_resource(ReactorTimer {
+        time_left: REACTOR_SECS,
+    });
+}
+
+/// Отложенные переходы между актами (рычаг, фрагменты).
+fn tick_transition(
+    time: Res<Time>,
+    mut commands: Commands,
+    transition: Option<ResMut<PendingTransition>>,
+    mut next_state: ResMut<NextState<GameState>>,
+) {
+    let Some(mut transition) = transition else {
+        return;
+    };
+    transition.timer.tick(time.delta());
+    if transition.timer.just_finished() {
+        let next = transition.next;
+        commands.remove_resource::<PendingTransition>();
+        next_state.set(next);
+        info!("Act transition");
+    }
+}
+
+/// Таймер реактора Акта 3: тикает вниз, багровеет свет, тает полоска.
+/// На нуле - тепловой взрыв (финал-поражение).
+fn tick_reactor(
+    time: Res<Time>,
+    state: Res<State<GameState>>,
+    reactor: Option<ResMut<ReactorTimer>>,
+    mut ambient: ResMut<AmbientLight>,
+    mut progress: ResMut<GameProgress>,
+    mut next_state: ResMut<NextState<GameState>>,
+    mut bars: Query<&mut Node, With<MeltdownFill>>,
+) {
+    if *state.get() != GameState::Act3_TheReactor {
+        return;
+    }
+    let Some(mut reactor) = reactor else {
+        return;
+    };
+    reactor.time_left = (reactor.time_left - time.delta_secs()).max(0.0);
+    // Чем ближе взрыв, тем багровее свет.
+    let dread = 1.0 - reactor.time_left / REACTOR_SECS;
+    ambient.color = Color::srgb(
+        0.5 + 0.4 * dread,
+        0.58 - 0.35 * dread,
+        0.75 - 0.55 * dread,
+    );
+    for mut node in &mut bars {
+        node.width = Val::Percent((reactor.time_left / REACTOR_SECS * 100.0).clamp(0.0, 100.0));
+    }
+    if reactor.time_left <= 0.0 {
+        progress.ending = Some(EndingKind::Timeout);
+        next_state.set(GameState::GameOver);
+        info!("The reactor blew.");
+    }
+}
+
+/// Триггер лифта (Акт 3): 5 реликвий - Искупление, иначе - Поглощение.
+fn elevator_trigger(
+    state: Res<State<GameState>>,
+    players: Query<&Transform, With<Player>>,
+    lifts: Query<&Transform, (With<Elevator>, Without<Player>)>,
+    mut progress: ResMut<GameProgress>,
+    mut next_state: ResMut<NextState<GameState>>,
+) {
+    if *state.get() != GameState::Act3_TheReactor {
+        return;
+    }
+    for player in &players {
+        for lift in &lifts {
+            let dx = player.translation.x - lift.translation.x;
+            let dz = player.translation.z - lift.translation.z;
+            if dx * dx + dz * dz < ELEVATOR_RADIUS * ELEVATOR_RADIUS {
+                if progress.quest_items >= interaction::QUEST_COUNT as u32 {
+                    next_state.set(GameState::GameWon);
+                    info!("REDEMPTION");
+                } else {
+                    progress.ending = Some(EndingKind::Absorbed);
+                    next_state.set(GameState::GameOver);
+                    info!("ABSORBED");
+                }
+                return;
+            }
+        }
+    }
+}
+
+/// Рестарт забега клавишей R (в актах и на финалах): начинается Акт 1,
+/// всё остальное сбрасывает `reset_run` на входе в него.
+fn restart_run(keys: Res<ButtonInput<KeyCode>>, mut next_state: ResMut<NextState<GameState>>) {
+    if keys.just_pressed(KeyCode::KeyR) {
+        next_state.set(GameState::Act1_TheDescent);
+        info!("Run restarted from Act 1");
+    }
+}
+
+/// Экран финала (GameOver/GameWon): 2D-камера + затемнение + табличка.
+/// Текст поражения зависит от причины (`GameProgress.ending`).
+fn setup_end_screen(
+    mut commands: Commands,
+    progress: Res<GameProgress>,
+    state: Res<State<GameState>>,
+) {
+    let act = *state.get();
+    let won = act == GameState::GameWon;
+    let (title, title_color, body): (&str, Color, &str) = if won {
+        (
+            "REDEMPTION",
+            Color::srgb(0.85, 0.75, 0.5),
+            "You hold the light steady and speak: \"I won't run anymore. Forgive me, Misha.\" The shadow melts into a small smiling boy - and is gone. The lift rises into bright dawn. You are free.",
+        )
+    } else {
+        match progress.ending {
+            Some(EndingKind::HeartDeath) => (
+                "YOU DIED",
+                Color::srgb(0.8, 0.05, 0.05),
+                "Your heart gave out in the dark.",
+            ),
+            Some(EndingKind::Timeout) => (
+                "THE REACTOR BLEW",
+                Color::srgb(0.85, 0.3, 0.1),
+                "White heat takes the bunker. You never reached the lift.",
+            ),
+            _ => (
+                "ABSORBED",
+                Color::srgb(0.45, 0.05, 0.1),
+                "Black hands unfold from the dark lift. Without all five keepsakes, guilt keeps its hold - and the shadow drags you down the shaft.",
+            ),
+        }
+    };
+    commands.spawn((Camera2d, StateScoped(act)));
     commands
         .spawn((
             Node {
                 width: Val::Percent(100.0),
                 height: Val::Percent(100.0),
-                align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.25, 0.0, 0.0, 0.55)),
-            DeathOverlay,
-            StateScoped(AppState::InGame),
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.88)),
+            StateScoped(act),
         ))
         .with_children(|parent| {
             parent
@@ -1118,132 +1500,65 @@ fn spawn_death_overlay(commands: &mut Commands) {
                         flex_direction: FlexDirection::Column,
                         align_items: AlignItems::Center,
                         row_gap: Val::Px(14.0),
-                        padding: UiRect {
-                            left: Val::Px(56.0),
-                            right: Val::Px(56.0),
-                            top: Val::Px(40.0),
-                            bottom: Val::Px(40.0),
-                        },
+                        margin: UiRect::horizontal(Val::Px(60.0)),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.05, 0.01, 0.01)),
-                    DeathOverlay,
-                    StateScoped(AppState::InGame),
+                    StateScoped(act),
                 ))
                 .with_children(|panel| {
                     panel.spawn((
-                        Text::new("YOU DIED"),
+                        Text::new(title),
                         TextFont {
                             font_size: 64.0,
                             ..default()
                         },
-                        TextColor(Color::srgb(0.8, 0.05, 0.05)),
-                        DeathOverlay,
-                        StateScoped(AppState::InGame),
+                        TextColor(title_color),
+                        StateScoped(act),
                     ));
                     panel.spawn((
-                        Text::new("YOUR HEART GAVE OUT IN THE DARK"),
+                        Text::new(body),
+                        TextFont {
+                            font_size: 20.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.75, 0.75, 0.78)),
+                        StateScoped(act),
+                    ));
+                    if !won {
+                        panel.spawn((
+                            Text::new(format!(
+                                "KEEPSAKES: {}/{}",
+                                progress.quest_items,
+                                interaction::QUEST_COUNT
+                            )),
+                            TextFont {
+                                font_size: 20.0,
+                                ..default()
+                            },
+                            TextColor(Color::srgb(0.8, 0.65, 0.4)),
+                            StateScoped(act),
+                        ));
+                    }
+                    panel.spawn((
+                        Text::new("R - NEW RUN      ESC - MENU"),
                         TextFont {
                             font_size: 22.0,
                             ..default()
                         },
-                        TextColor(Color::srgb(0.6, 0.5, 0.5)),
-                        DeathOverlay,
-                        StateScoped(AppState::InGame),
-                    ));
-                    panel.spawn((
-                        Text::new("R - TRY AGAIN      ESC - MENU"),
-                        TextFont {
-                            font_size: 24.0,
-                            ..default()
-                        },
-                        TextColor(Color::srgb(0.55, 0.55, 0.6)),
-                        DeathOverlay,
-                        StateScoped(AppState::InGame),
+                        TextColor(Color::srgb(0.6, 0.6, 0.62)),
+                        StateScoped(act),
                     ));
                 });
         });
 }
 
-/// Рестарт забега клавишей R после победы или смерти: убираем оверлеи,
-/// возвращаем фрагменты на места, сбрасываем стамину/безумие/скримеры.
-fn restart_input(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    overlays: Query<Entity, With<WinOverlay>>,
-    screamer_overlays: Query<Entity, With<ScreamerOverlay>>,
-    death_overlays: Query<Entity, With<DeathOverlay>>,
-    battery_entities: Query<Entity, With<BatteryItem>>,
-    tape_entities: Query<Entity, With<AudioCassette>>,
-    subtitle_entities: Query<Entity, With<SubtitleOverlay>>,
-    mut progress: ResMut<GameProgress>,
-    mut screamer: ResMut<ScreamerState>,
-    mut stamina_query: Query<&mut Stamina>,
-    mut insanity_query: Query<&mut Insanity>,
-    mut forced_query: Query<&mut ForcedRun>,
-    mut lamp_query: Query<&mut Flashlight>,
-) {
-    if !(progress.won || progress.dead) || !keys.just_pressed(KeyCode::KeyR) {
-        return;
-    }
-    for entity in &overlays {
-        commands.entity(entity).despawn();
-    }
-    // Победа могла случиться прямо во время скримера - убираем и его картинку,
-    // иначе она зависнет (тиканье ниже будет сброшено).
-    for entity in &screamer_overlays {
-        commands.entity(entity).despawn();
-    }
-    for entity in &death_overlays {
-        commands.entity(entity).despawn();
-    }
-    for entity in &battery_entities {
-        commands.entity(entity).despawn();
-    }
-    for entity in &tape_entities {
-        commands.entity(entity).despawn();
-    }
-    for entity in &subtitle_entities {
-        commands.entity(entity).despawn();
-    }
-    progress.collected = 0;
-    progress.won = false;
-    progress.dead = false;
-    for spot in progress.fragment_spots.clone() {
-        spawn_fragment(&mut commands, &mut meshes, &mut materials, spot);
-    }
-    for spot in progress.battery_spots.clone() {
-        spawn_battery(&mut commands, &mut meshes, &mut materials, spot);
-    }
-    for (spot, lore) in progress.cassette_spots.clone() {
-        spawn_cassette(&mut commands, &mut meshes, &mut materials, spot, lore);
-    }
-    for mut stamina in &mut stamina_query {
-        stamina.current = Stamina::MAX;
-    }
-    for mut insanity in &mut insanity_query {
-        insanity.0 = 0.0;
-    }
-    for mut forced in &mut forced_query {
-        forced.0 = false;
-    }
-    for mut lamp in &mut lamp_query {
-        lamp.battery = Flashlight::MAX_BATTERY;
-        lamp.is_on = true;
-    }
-    screamer.full_reset();
-    info!("Run restarted");
-}
-
-/// Выход в меню по Esc из игры.
+/// Выход в меню по Esc (из актов и с финалов).
 fn escape_to_menu(
     keys: Res<ButtonInput<KeyCode>>,
-    mut next_state: ResMut<NextState<AppState>>,
+    mut next_state: ResMut<NextState<GameState>>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
-        next_state.set(AppState::MainMenu);
+        next_state.set(GameState::MainMenu);
     }
 }
 
