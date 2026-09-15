@@ -73,10 +73,24 @@ impl Default for Stamina {
 pub struct ForcedRun(pub bool);
 
 /// Фонарик (висит на [`SpotLight`](bevy::pbr::SpotLight), ребёнке камеры).
+/// Акт 2: включается клавишей F, тратит батарею; во тьме растёт безумие.
 #[derive(Component)]
 pub struct Flashlight {
     /// Базовая яркость, вокруг которой играет мерцание.
     pub base_intensity: f32,
+    /// Включён ли фонарь. При нуле батареи гаснет сам.
+    pub is_on: bool,
+    /// Текущий заряд батареи (0..[`Flashlight::MAX_BATTERY`]).
+    pub battery: f32,
+}
+
+impl Flashlight {
+    /// Полный заряд батареи.
+    pub const MAX_BATTERY: f32 = 100.0;
+    /// Разряд в секунду при включённом фонаре (50 секунд света с полной).
+    const DRAIN_PER_SEC: f32 = 2.0;
+    /// Ниже этого заряда свет начинает задыхаться.
+    const LOW_BATTERY: f32 = 25.0;
 }
 
 // --- Маркеры элементов HUD (обновляются в [`hud_system`]) ---
@@ -108,6 +122,7 @@ impl Plugin for PlayerPlugin {
                 player_movement,
                 stamina_system,
                 flashlight_flicker,
+                flashlight_toggle_and_drain_system,
                 hud_system,
             )
                 .run_if(crate::game_input_allowed),
@@ -274,6 +289,33 @@ fn stamina_system(
     }
 }
 
+/// Включение/выключение фонаря (F) и разряд батареи (Акт 2).
+/// Мёртвый фонарь (заряд 0) не включается, пока не подобрать батарейку.
+fn flashlight_toggle_and_drain_system(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut query: Query<&mut Flashlight>,
+) {
+    for mut lamp in &mut query {
+        if keys.just_pressed(KeyCode::KeyF) {
+            if lamp.battery > 0.0 {
+                lamp.is_on = !lamp.is_on;
+                info!("Flashlight {}", if lamp.is_on { "ON" } else { "OFF" });
+            } else {
+                info!("Flashlight is dead - find a battery!");
+            }
+        }
+        if lamp.is_on {
+            lamp.battery =
+                (lamp.battery - Flashlight::DRAIN_PER_SEC * time.delta_secs()).max(0.0);
+            if lamp.battery <= 0.0 {
+                lamp.is_on = false;
+                info!("Flashlight battery depleted - find a battery!");
+            }
+        }
+    }
+}
+
 /// Мерцание фонарика. Лёгкое дрожание есть всегда, но чем выше скрытое
 /// безумие - тем сильнее дёргается свет и тем чаще случаются провалы.
 fn flashlight_flicker(
@@ -293,10 +335,21 @@ fn flashlight_flicker(
     let amount = 0.04 + madness * 0.35;
 
     for (lamp, mut light) in &mut lamp_query {
-        light.intensity = lamp.base_intensity * (1.0 + noise * amount);
+        // Выключенный фонарь не светит вообще (клавиша F, Акт 2).
+        if !lamp.is_on {
+            light.intensity = 0.0;
+            continue;
+        }
+        // Заряд видно без HUD-полоски: чем ниже, тем тусклее свет.
+        let charge = (lamp.battery / Flashlight::MAX_BATTERY).clamp(0.0, 1.0);
+        light.intensity = lamp.base_intensity * (1.0 + noise * amount) * (0.25 + 0.75 * charge);
         // Редкие глубокие провалы света при высоком безумии.
         if madness > 0.6 && (t * 3.1).sin() > 0.985 {
             light.intensity *= 0.25;
+        }
+        // Задыхающийся свет на исходе заряда: частые провалы.
+        if lamp.battery < Flashlight::LOW_BATTERY && (t * 9.0 + lamp.battery).sin() > 0.7 {
+            light.intensity *= 0.3;
         }
     }
 }

@@ -15,6 +15,9 @@
 //!    появляется чёрная тень и бросается в лицо (см. [`crate::shadow`]).
 //! 4. Через секунду сущность картинки удаляется (`despawn`), безумие
 //!    сбрасывается, игра продолжается.
+//! 5. Акт 2: с выключенным фонарём безумие растёт само (+5/с, см.
+//!    `darkness_insanity_penalty_system`), а остывает только на свету.
+//!    Порог срабатывает от любой причины, не только от бега.
 //!
 //! Файлы скриммеров опциональны: наличие проверяется при **каждом**
 //! срабатывании, поэтому файлы, положенные в `assets/` при запущенной игре,
@@ -27,7 +30,7 @@ use bevy::state::state_scoped::StateScoped;
 use rand::Rng;
 
 use crate::audio::asset_exists;
-use crate::player::{ForcedRun, Player, Stamina};
+use crate::player::{Flashlight, ForcedRun, Player, Stamina};
 use crate::shadow::{spawn_shadow, ShadowLunge};
 use crate::{AppState, GameProgress, LevelColliders, WallAabb};
 
@@ -60,6 +63,8 @@ pub const INSANITY_THRESHOLD: f32 = 100.0;
 const INSANITY_GAIN_PER_SEC: f32 = 14.0;
 /// Скорость «остывания» безумия, когда герой не насилует себя (ед/с).
 const INSANITY_DECAY_PER_SEC: f32 = 8.0;
+/// Набор безумия в темноте при выключенном фонаре (ед/с, Акт 2).
+const DARKNESS_GAIN_PER_SEC: f32 = 5.0;
 /// Сколько секунд скример висит на экране. РОВНО 1.0 по ТЗ.
 const SCREAMER_DURATION_SECS: f32 = 1.0;
 /// Пауза после скримера, во время которой новый триггер невозможен.
@@ -137,7 +142,8 @@ impl Plugin for HallucinationsPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ScreamerState::default()).add_systems(
             Update,
-            (update_madness, tick_screamer).run_if(in_state(AppState::InGame)),
+            (update_madness, tick_screamer, darkness_insanity_penalty_system)
+                .run_if(in_state(AppState::InGame)),
         );
     }
 }
@@ -161,13 +167,16 @@ fn update_madness(
     progress: Res<GameProgress>,
     mut state: ResMut<ScreamerState>,
     mut lunge: ResMut<ShadowLunge>,
+    flashlights: Query<&Flashlight>,
     mut player_query: Query<(&ForcedRun, &Player, &Transform, &mut Insanity)>,
 ) {
     let dt = time.delta_secs();
     state.cooldown = (state.cooldown - dt).max(0.0);
-    if state.active || progress.dead {
+    if state.active || progress.won || progress.dead {
         return;
     }
+    // Фонарь выключен - во тьме безумие не остывает (см. штраф за темноту).
+    let light_on = flashlights.iter().next().map(|f| f.is_on).unwrap_or(true);
 
     for (forced, player, transform, mut insanity) in &mut player_query {
         if forced.0 && state.cooldown <= 0.0 {
@@ -203,10 +212,52 @@ fn update_madness(
                 state.random_trigger = None;
             }
         } else {
-            // Отдых: безумие медленно отпускает, случайный таймер сбрасывается.
-            insanity.0 = (insanity.0 - INSANITY_DECAY_PER_SEC * dt).max(0.0);
+            // Отдых: безумие медленно отпускает (но только на свету -
+            // во тьме оно не остывает), случайный таймер сбрасывается.
+            if light_on {
+                insanity.0 = (insanity.0 - INSANITY_DECAY_PER_SEC * dt).max(0.0);
+            }
             state.random_trigger = None;
+            // Порог от ЛЮБОЙ причины (например, долгая тьма) - тоже психоз.
+            // Раньше порог был достижим только принудительным бегом и проверка
+            // жила в ветке выше; темнота это изменила.
+            if insanity.0 >= INSANITY_THRESHOLD && state.cooldown <= 0.0 {
+                fire_screamer(
+                    &mut commands,
+                    &assets,
+                    &mut meshes,
+                    &mut materials,
+                    &mut state,
+                    &mut lunge,
+                    transform.translation,
+                    player.yaw,
+                    &colliders.walls,
+                );
+            }
         }
+    }
+}
+
+/// Штраф за темноту (Акт 2): с выключенным фонарём безумие растёт само,
+/// +[`DARKNESS_GAIN_PER_SEC`]/с, даже без бега. До порога доводит общий
+/// триггер в [`update_madness`]: порог срабатывает от любой причины,
+/// а остывает безумие только на свету.
+fn darkness_insanity_penalty_system(
+    time: Res<Time>,
+    flashlights: Query<&Flashlight>,
+    progress: Res<GameProgress>,
+    mut players: Query<&mut Insanity, With<Player>>,
+) {
+    if progress.won || progress.dead {
+        return;
+    }
+    let light_on = flashlights.iter().next().map(|f| f.is_on).unwrap_or(true);
+    if light_on {
+        return;
+    }
+    for mut insanity in &mut players {
+        insanity.0 =
+            (insanity.0 + DARKNESS_GAIN_PER_SEC * time.delta_secs()).min(INSANITY_THRESHOLD);
     }
 }
 

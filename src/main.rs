@@ -8,10 +8,12 @@
 //! - [`audio`] - звукорежиссёр: музыка меню и циклический амбиент;
 //! - [`hallucinations`] - безумие и скримеры (PNG на весь экран + MP3).
 //! - [`atmosphere`] - лампы, туман, пыль, виньетка и зерно плёнки.
+//! - [`interaction`] - батарейки, кассеты, субтитры (Акт 2).
 
 mod atmosphere;
 mod audio;
 mod hallucinations;
+mod interaction;
 mod player;
 mod shadow;
 mod textures;
@@ -24,6 +26,7 @@ use bevy::prelude::*;
 use bevy::state::state_scoped::StateScoped;
 use bevy::window::{CursorGrabMode, WindowPlugin, WindowResolution};
 use hallucinations::{HallucinationsPlugin, Insanity, ScreamerOverlay, ScreamerState};
+use interaction::{AudioCassette, BatteryItem, InteractionPlugin, SubtitleOverlay};
 use player::{
     Flashlight, ForcedRun, InsanityVignette, Player, PlayerPlugin, Stamina, StaminaFill,
 };
@@ -92,6 +95,10 @@ pub struct GameProgress {
     pub dead: bool,
     /// Точки спавна фрагментов (для рестарта клавишей R).
     pub fragment_spots: Vec<Vec3>,
+    /// Точки спавна батареек (для рестарта клавишей R).
+    pub battery_spots: Vec<Vec3>,
+    /// Точки спавна кассет + индекс лора (для рестарта клавишей R).
+    pub cassette_spots: Vec<(Vec3, usize)>,
 }
 
 impl Default for GameProgress {
@@ -102,6 +109,8 @@ impl Default for GameProgress {
             won: false,
             dead: false,
             fragment_spots: Vec::new(),
+            battery_spots: Vec::new(),
+            cassette_spots: Vec::new(),
         }
     }
 }
@@ -181,6 +190,7 @@ fn main() {
             AudioDirectorPlugin,
             AtmospherePlugin,
             HallucinationsPlugin,
+            InteractionPlugin,
             ShadowPlugin,
         ))
         // Холодный тусклый свет окружения.
@@ -335,7 +345,8 @@ fn setup_menu(
                     "WASD / ARROWS - MOVE      MOUSE - LOOK\n\
                      SHIFT - RUN (DRAINS STAMINA)\n\
                      BEWARE: RUNNING ON EMPTY STAMINA FEEDS YOUR MADNESS\n\
-                     FIND 5 ECHO FRAGMENTS TO ESCAPE      ESC - MENU",
+                     FIND 5 ECHO FRAGMENTS TO ESCAPE      ESC - MENU\n\
+                     F - FLASHLIGHT (DRAINS BATTERY)      E - PLAY TAPES      DARKNESS FEEDS MADNESS",
                 ),
                 TextFont {
                     font_size: 18.0,
@@ -589,6 +600,8 @@ fn generate_level(
     progress.dead = false;
     progress.total = FRAGMENT_COUNT as u32;
     progress.fragment_spots.clear();
+    progress.battery_spots.clear();
+    progress.cassette_spots.clear();
 
     let maze = generate_maze(MAZE_W, MAZE_H);
 
@@ -723,6 +736,8 @@ fn generate_level(
                 Transform::from_xyz(0.15, -0.2, 0.0),
                 Flashlight {
                     base_intensity: player::FLASHLIGHT_INTENSITY,
+                    is_on: true,
+                    battery: Flashlight::MAX_BATTERY,
                 },
                 StateScoped(AppState::InGame),
             ));
@@ -764,10 +779,21 @@ fn generate_level(
         spawn_fragment(&mut commands, &mut meshes, &mut materials, spot);
     }
 
+    // Акт 2: батарейки и кассеты по случайным клеткам пола.
+    spawn_act2_pickups(
+        &mut commands,
+        &mut meshes,
+        &mut materials,
+        &maze,
+        &mut progress,
+    );
+
     info!(
-        "Level generated: {} walls, {} fragments",
+        "Level generated: {} walls, {} fragments, {} batteries, {} cassettes",
         colliders.walls.len(),
-        progress.fragment_spots.len()
+        progress.fragment_spots.len(),
+        progress.battery_spots.len(),
+        progress.cassette_spots.len()
     );
 }
 
@@ -795,6 +821,100 @@ fn spawn_fragment(
         EchoFragment,
         StateScoped(AppState::InGame),
     ));
+}
+
+/// Спавн одной батарейки: светящийся зелёный брусок (Акт 2).
+fn spawn_battery(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    spot: Vec3,
+) {
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(0.14, 0.22, 0.14))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.2, 0.9, 0.3),
+            unlit: true,
+            ..default()
+        })),
+        Transform::from_translation(spot + Vec3::new(0.0, 0.35, 0.0)),
+        BatteryItem {
+            recharge_amount: interaction::BATTERY_RECHARGE,
+        },
+        StateScoped(AppState::InGame),
+    ));
+}
+
+/// Спавн одной сюжетной кассеты: тёмно-красный брусок (Акт 2).
+/// `lore_index` выбирает аудиофайл и текст субтитров.
+fn spawn_cassette(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    spot: Vec3,
+    lore_index: usize,
+) {
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(0.26, 0.05, 0.16))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.5, 0.06, 0.07),
+            unlit: true,
+            ..default()
+        })),
+        Transform::from_translation(spot + Vec3::new(0.0, 0.3, 0.0)),
+        AudioCassette {
+            audio_path: interaction::CASSETTE_TRACKS
+                [lore_index % interaction::CASSETTE_TRACKS.len()]
+            .to_string(),
+            was_played: false,
+            lore_index,
+        },
+        StateScoped(AppState::InGame),
+    ));
+}
+
+/// Акт 2: разброс батареек и кассет по случайным клеткам пола + запоминание
+/// точек для рестарта. Кассеты - подальше от спавна (награда за исследование).
+fn spawn_act2_pickups(
+    commands: &mut Commands,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
+    maze: &[Vec<bool>],
+    progress: &mut GameProgress,
+) {
+    let mut rng = rand::thread_rng();
+    let mut floor: Vec<(usize, usize)> = Vec::new();
+    for (cy, row) in maze.iter().enumerate() {
+        for (cx, &is_wall) in row.iter().enumerate() {
+            if !is_wall {
+                floor.push((cx, cy));
+            }
+        }
+    }
+    // Батарейки: где угодно на полу.
+    for _ in 0..interaction::BATTERY_COUNT {
+        if let Some(&(cx, cy)) = floor.choose(&mut rng) {
+            let (x, z) = cell_center(cx, cy);
+            let spot = Vec3::new(x, 0.0, z);
+            progress.battery_spots.push(spot);
+            spawn_battery(commands, meshes, materials, spot);
+        }
+    }
+    // Кассеты: подальше от спавна, каждая со своим лором.
+    let far: Vec<(usize, usize)> = floor
+        .iter()
+        .copied()
+        .filter(|&(cx, cy)| cx.abs_diff(1) + cy.abs_diff(1) >= 8)
+        .collect();
+    let pool = if far.is_empty() { &floor } else { &far };
+    for i in 0..interaction::CASSETTE_COUNT {
+        if let Some(&(cx, cy)) = pool.choose(&mut rng) {
+            let (x, z) = cell_center(cx, cy);
+            let spot = Vec3::new(x, 0.0, z);
+            progress.cassette_spots.push((spot, i));
+            spawn_cassette(commands, meshes, materials, spot, i);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,11 +1175,15 @@ fn restart_input(
     overlays: Query<Entity, With<WinOverlay>>,
     screamer_overlays: Query<Entity, With<ScreamerOverlay>>,
     death_overlays: Query<Entity, With<DeathOverlay>>,
+    battery_entities: Query<Entity, With<BatteryItem>>,
+    tape_entities: Query<Entity, With<AudioCassette>>,
+    subtitle_entities: Query<Entity, With<SubtitleOverlay>>,
     mut progress: ResMut<GameProgress>,
     mut screamer: ResMut<ScreamerState>,
     mut stamina_query: Query<&mut Stamina>,
     mut insanity_query: Query<&mut Insanity>,
     mut forced_query: Query<&mut ForcedRun>,
+    mut lamp_query: Query<&mut Flashlight>,
 ) {
     if !(progress.won || progress.dead) || !keys.just_pressed(KeyCode::KeyR) {
         return;
@@ -1075,11 +1199,26 @@ fn restart_input(
     for entity in &death_overlays {
         commands.entity(entity).despawn();
     }
+    for entity in &battery_entities {
+        commands.entity(entity).despawn();
+    }
+    for entity in &tape_entities {
+        commands.entity(entity).despawn();
+    }
+    for entity in &subtitle_entities {
+        commands.entity(entity).despawn();
+    }
     progress.collected = 0;
     progress.won = false;
     progress.dead = false;
     for spot in progress.fragment_spots.clone() {
         spawn_fragment(&mut commands, &mut meshes, &mut materials, spot);
+    }
+    for spot in progress.battery_spots.clone() {
+        spawn_battery(&mut commands, &mut meshes, &mut materials, spot);
+    }
+    for (spot, lore) in progress.cassette_spots.clone() {
+        spawn_cassette(&mut commands, &mut meshes, &mut materials, spot, lore);
     }
     for mut stamina in &mut stamina_query {
         stamina.current = Stamina::MAX;
@@ -1089,6 +1228,10 @@ fn restart_input(
     }
     for mut forced in &mut forced_query {
         forced.0 = false;
+    }
+    for mut lamp in &mut lamp_query {
+        lamp.battery = Flashlight::MAX_BATTERY;
+        lamp.is_on = true;
     }
     screamer.full_reset();
     info!("Run restarted");
