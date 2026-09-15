@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ECHO OF FORGOTTEN WALLS — Psychological Horror in Three Acts</title>
+<meta name="description" content="A first-person psychological horror. The bunker remembers what you did.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=Spectral:ital,wght@0,300;0,400;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#07070c; --bg2:#0c0c13; --card:#101016;
+    --red:#c11212; --red-dim:#7a0d0d; --gold:#e8c35a;
+    --text:#d8d4cc; --muted:#8f887a; --bright:#f2ecdd;
+    --line:#26161a;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{background:var(--bg);color:var(--text);font-family:'Spectral',Georgia,serif;font-size:17px;line-height:1.75;overflow-x:hidden;}
+  ::selection{background:var(--red);color:#fff;}
+  ::-webkit-scrollbar{width:10px;} ::-webkit-scrollbar-track{background:#0a0a10;}
+  ::-webkit-scrollbar-thumb{background:#3a1518;border-radius:5px;} ::-webkit-scrollbar-thumb:hover{background:var(--red-dim);}
+
+  /* film grain over everything */
+  body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:.07;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");}
+
+  /* ===== NAV ===== */
+  nav{position:fixed;top:0;left:0;right:0;z-index:1000;display:flex;align-items:center;justify-content:space-between;
+    padding:16px 40px;transition:background .4s,box-shadow .4s;}
+  nav.scrolled{background:rgba(7,7,12,.88);backdrop-filter:blur(12px);box-shadow:0 1px 0 var(--line);}
+  .logo{font-family:'Cinzel',serif;font-weight:900;font-size:15px;letter-spacing:3px;color:var(--bright);text-decoration:none;}
+  .logo span{color:var(--red);}
+  .nav-links{display:flex;gap:28px;list-style:none;}
+  .nav-links a{color:var(--muted);text-decoration:none;font-size:14px;letter-spacing:2px;text-transform:uppercase;transition:color .3s;}
+  .nav-links a:hover{color:var(--bright);}
+  @media(max-width:760px){.nav-links{display:none;}}
+
+  /* ===== HERO ===== */
+  .hero{position:relative;min-height:100vh;display:flex;align-items:center;justify-content:center;text-align:center;overflow:hidden;}
+  .hero-bg{position:absolute;inset:-40px;background:url('assets/site/monster.jpg') center/cover;animation:kenburns 26s ease-in-out infinite alternate;filter:brightness(.55) saturate(.9);}
+  @keyframes kenburns{from{transform:scale(1) translateY(0);}to{transform:scale(1.12) translateY(-18px);}}
+  .hero-shade{position:absolute;inset:0;background:
+    radial-gradient(ellipse at center,transparent 20%,rgba(0,0,0,.55) 65%,rgba(0,0,0,.92) 100%),
+    linear-gradient(to bottom,rgba(7,7,12,.75),transparent 30%,transparent 55%,var(--bg) 100%);}
+  #torch{position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle 260px at 50% 40%,rgba(255,244,220,.14),transparent 70%);}
+  .hero-inner{position:relative;z-index:2;padding:120px 24px 80px;max-width:900px;}
+  .kicker{font-size:13px;letter-spacing:7px;color:#b35555;text-transform:uppercase;margin-bottom:18px;}
+  h1.title{font-family:'Cinzel',serif;font-weight:900;font-size:clamp(42px,8vw,96px);line-height:1.08;letter-spacing:6px;color:var(--bright);
+    text-shadow:0 0 30px rgba(193,18,18,.5),0 3px 0 #000;animation:flicker 7s infinite;}
+  @keyframes flicker{0%,100%{opacity:1;}92%{opacity:1;}93%{opacity:.55;}94%{opacity:1;}96.5%{opacity:.75;}97%{opacity:1;}}
+  .title .blood{color:#e03131;text-shadow:0 0 34px rgba(224,49,49,.8),0 3px 0 #000;}
+  .tagline{margin:22px auto 0;max-width:640px;font-style:italic;font-size:19px;color:#c9c2b4;}
+  .cta{margin-top:36px;display:flex;gap:16px;justify-content:center;flex-wrap:wrap;}
+  .btn{display:inline-block;padding:15px 38px;font-family:'Cinzel',serif;font-size:14px;font-weight:700;letter-spacing:3px;text-decoration:none;border-radius:3px;transition:transform .25s,box-shadow .25s,background .25s;cursor:pointer;}
+  .btn-red{background:linear-gradient(180deg,#d11a1a,#8f0d0d);color:#fff;box-shadow:0 0 28px rgba(193,18,18,.4);}
+  .btn-red:hover{transform:translateY(-2px);box-shadow:0 0 44px rgba(193,18,18,.65);}
+  .btn-ghost{border:1px solid #4a4a55;color:var(--bright);background:rgba(255,255,255,.03);}
+  .btn-ghost:hover{transform:translateY(-2px);border-color:#888;background:rgba(255,255,255,.07);}
+  .scroll-hint{position:absolute;bottom:26px;left:50%;transform:translateX(-50%);color:var(--muted);font-size:12px;letter-spacing:4px;z-index:2;animation:bob 2.4s ease-in-out infinite;}
+  @keyframes bob{0%,100%{transform:translate(-50%,0);opacity:.6;}50%{transform:translate(-50%,8px);opacity:1;}}
+
+  /* ===== SECTIONS ===== */
+  section{padding:96px 24px;}
+  .wrap{max-width:1080px;margin:0 auto;}
+  .sec-kicker{text-align:center;font-size:12px;letter-spacing:6px;color:#b35555;text-transform:uppercase;margin-bottom:12px;}
+  h2.sec{font-family:'Cinzel',serif;text-align:center;font-size:clamp(26px,4vw,40px);letter-spacing:4px;color:var(--bright);margin-bottom:14px;}
+  .rule{width:120px;height:2px;margin:0 auto 46px;background:linear-gradient(90deg,transparent,var(--red),transparent);}
+  .reveal{opacity:0;transform:translateY(36px);transition:opacity .9s ease,transform .9s ease;}
+  .reveal.visible{opacity:1;transform:none;}
+
+  /* stats */
+  .stats{background:var(--bg2);border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:0;}
+  .stats-grid{display:grid;grid-template-columns:repeat(4,1fr);max-width:1080px;margin:0 auto;}
+  .stat{padding:38px 10px;text-align:center;border-left:1px solid var(--line);}
+  .stat:first-child{border-left:none;}
+  .stat b{display:block;font-family:'Cinzel',serif;font-size:40px;color:var(--bright);}
+  .stat b em{font-style:normal;color:var(--red);}
+  .stat span{font-size:13px;letter-spacing:3px;text-transform:uppercase;color:var(--muted);}
+  @media(max-width:640px){.stats-grid{grid-template-columns:repeat(2,1fr);}.stat:nth-child(3){border-left:none;}}
+
+  /* story */
+  .story-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:52px;align-items:center;}
+  @media(max-width:860px){.story-grid{grid-template-columns:1fr;}}
+  .story-grid p{margin-bottom:16px;color:#c9c2b4;}
+  .story-grid p b{color:var(--bright);}
+  .quote{border-left:3px solid var(--red);padding:6px 0 6px 20px;margin:26px 0;font-style:italic;font-size:19px;color:var(--bright);}
+  .frame{position:relative;border-radius:8px;overflow:hidden;border:1px solid var(--line);box-shadow:0 24px 70px rgba(0,0,0,.6);}
+  .frame img{display:block;width:100%;height:100%;object-fit:cover;transition:transform .8s ease;}
+  .frame:hover img{transform:scale(1.05);}
+  .frame::after{content:"";position:absolute;inset:0;box-shadow:inset 0 0 90px rgba(0,0,0,.75);pointer-events:none;}
+  .caption{margin-top:10px;font-size:13px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;text-align:center;}
+
+  /* acts */
+  .acts{background:var(--bg2);border-top:1px solid var(--line);border-bottom:1px solid var(--line);}
+  .acts-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:26px;}
+  @media(max-width:860px){.acts-grid{grid-template-columns:1fr;max-width:520px;margin:0 auto;}}
+  .act{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:34px 28px;position:relative;overflow:hidden;transition:transform .35s,border-color .35s,box-shadow .35s;}
+  .act:hover{transform:translateY(-6px);border-color:#5a1a1e;box-shadow:0 20px 50px rgba(0,0,0,.5);}
+  .act::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,transparent,var(--ac,#c11212),transparent);}
+  .act1{--ac:#7fd4e8;} .act2{--ac:#c11212;} .act3{--ac:#e0682a;}
+  .act-num{font-family:'Cinzel',serif;font-size:13px;letter-spacing:5px;color:var(--ac,#c11212);margin-bottom:10px;}
+  .act h3{font-family:'Cinzel',serif;font-size:22px;letter-spacing:2px;color:var(--bright);margin-bottom:12px;}
+  .act p{font-size:15.5px;color:#b9b2a4;}
+  .act .goal{margin-top:16px;font-size:13px;letter-spacing:2px;text-transform:uppercase;color:var(--ac,#c11212);}
+
+  /* features */
+  .feat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;}
+  @media(max-width:860px){.feat-grid{grid-template-columns:1fr 1fr;}}
+  @media(max-width:560px){.feat-grid{grid-template-columns:1fr;}}
+  .feat{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:28px 24px;transition:transform .35s,border-color .35s;}
+  .feat:hover{transform:translateY(-5px);border-color:#5a1a1e;}
+  .feat .ico{font-size:30px;display:block;margin-bottom:12px;filter:drop-shadow(0 0 12px rgba(193,18,18,.4));}
+  .feat h3{font-family:'Cinzel',serif;font-size:16px;letter-spacing:2px;color:var(--bright);margin-bottom:8px;}
+  .feat p{font-size:14.5px;color:#a9a294;}
+
+  /* gallery */
+  .gallery-sec{background:var(--bg2);border-top:1px solid var(--line);border-bottom:1px solid var(--line);}
+  .gal-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:22px;}
+  @media(max-width:640px){.gal-grid{grid-template-columns:1fr;}}
+  .gal-grid .frame{cursor:zoom-in;aspect-ratio:16/9;}
+  #lightbox{position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.92);display:none;align-items:center;justify-content:center;padding:30px;}
+  #lightbox.open{display:flex;}
+  #lightbox img{max-width:92vw;max-height:88vh;border:1px solid #3a1518;border-radius:6px;box-shadow:0 0 80px rgba(193,18,18,.25);}
+
+  /* controls + tips */
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:52px;}
+  @media(max-width:860px){.cols{grid-template-columns:1fr;}}
+  table.keys{width:100%;border-collapse:collapse;font-size:15px;}
+  table.keys td{padding:10px 14px;border:1px solid var(--line);}
+  table.keys tr:nth-child(odd){background:rgba(193,18,18,.06);}
+  table.keys td:first-child{font-family:Consolas,monospace;color:var(--gold);white-space:nowrap;width:130px;}
+  .tip{margin:0 0 12px;padding:12px 16px;background:rgba(193,18,18,.06);border-left:3px solid var(--red);border-radius:0 6px 6px 0;font-size:15.5px;}
+  .tip b{color:var(--bright);}
+
+  /* download */
+  .dl{background:linear-gradient(180deg,var(--bg2),#120608);border-top:1px solid var(--line);text-align:center;}
+  .dl p{max-width:620px;margin:0 auto 30px;color:#c9c2b4;}
+  .sys{margin-top:26px;font-size:13px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;}
+
+  footer{padding:34px 24px;text-align:center;font-size:14px;color:var(--muted);border-top:1px solid var(--line);}
+  footer a{color:#b35555;text-decoration:none;} footer a:hover{color:var(--bright);}
+  footer .lore{font-style:italic;margin-top:8px;color:#6d675c;}
+</style>
+</head>
+<body>
+
+<nav id="nav">
+  <a class="logo" href="#top">ECHO <span>OF</span> FORGOTTEN WALLS</a>
+  <ul class="nav-links">
+    <li><a href="#story">Story</a></li>
+    <li><a href="#acts">Acts</a></li>
+    <li><a href="#features">Features</a></li>
+    <li><a href="#gallery">Gallery</a></li>
+    <li><a href="#download">Download</a></li>
+  </ul>
+</nav>
+
+<!-- ===== HERO ===== -->
+<header class="hero" id="top">
+  <div class="hero-bg"></div>
+  <div class="hero-shade"></div>
+  <div id="torch"></div>
+  <div class="hero-inner">
+    <div class="kicker">A psychological horror in three acts</div>
+    <h1 class="title">ECHO OF<br><span class="blood">FORGOTTEN WALLS</span></h1>
+    <p class="tagline">The bunker materializes your guilt. Hold the light — or be absorbed by the dark.</p>
+    <div class="cta">
+      <a class="btn btn-red" href="#download">DESCEND NOW</a>
+      <a class="btn btn-ghost" href="https://github.com/daniil-ship/igragovnachekychka67" target="_blank" rel="noopener">SOURCE CODE</a>
+    </div>
+  </div>
+  <div class="scroll-hint">SCROLL&nbsp;&nbsp;▼</div>
+</header>
+
+<!-- ===== STATS ===== -->
+<div class="stats">
+  <div class="stats-grid">
+    <div class="stat"><b>3</b><span>Acts of dread</span></div>
+    <div class="stat"><b>5</b><span>Keepsakes</span></div>
+    <div class="stat"><b><em>180</em></b><span>Seconds to meltdown</span></div>
+    <div class="stat"><b>∞</b><span>Regret</span></div>
+  </div>
+</div>
+
+<!-- ===== STORY ===== -->
+<section id="story">
+  <div class="wrap story-grid">
+    <div class="reveal">
+      <div class="sec-kicker" style="text-align:left;">The story</div>
+      <h2 class="sec" style="text-align:left;">It remembers<br>what you did</h2>
+      <div class="quote">“Why did you leave me there?<br>I was so cold…” — Misha</div>
+      <p><b>Arthur, 34, archivist.</b> One last inventory of Archive-404 — a drowned Soviet bunker where a psi-anomaly turns guilt into living hallucinations.</p>
+      <p>Years ago Arthur abandoned his little brother Misha in the dark. Now the dark wears Misha's face and calls itself <b>The Fade</b> — a shadow that patrols the corridors, stares from the black…and hunts.</p>
+      <p>Gather the <b>5 keepsakes</b> of your brother before the lift doors close, speak the words you never said — and earn <b>REDEMPTION</b>. Fail, and the shadow drags you down the shaft.</p>
+    </div>
+    <div class="reveal">
+      <div class="frame"><img src="preview.png" alt="The Fade at the end of the corridor"></div>
+      <div class="caption">It wears the dark like skin</div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== ACTS ===== -->
+<section class="acts" id="acts">
+  <div class="wrap">
+    <div class="sec-kicker reveal">Every act — a new maze</div>
+    <h2 class="sec reveal">Three descents</h2>
+    <div class="rule reveal"></div>
+    <div class="acts-grid">
+      <div class="act act1 reveal">
+        <div class="act-num">ACT I</div>
+        <h3>The Descent</h3>
+        <p>Calm fluorescent light, humming wires, six batteries. Find the generator lever deep in Sector G and wake what sleeps below. First two keepsakes hide here.</p>
+        <div class="goal">◎ Pull the lever →</div>
+      </div>
+      <div class="act act2 reveal">
+        <div class="act-num">ACT II</div>
+        <h3>The Rejection</h3>
+        <p>Only red emergency light remains. Blood seeps through the concrete. Collect 5 echo fragments while the Fade patrols — and stops… to stare at you.</p>
+        <div class="goal">◎ 5 fragments →</div>
+      </div>
+      <div class="act act3 reveal">
+        <div class="act-num">ACT III</div>
+        <h3>The Reactor</h3>
+        <p>Total blackout. 180 seconds to thermal explosion — a thin red bar and reddening air. The Fade hunts at full fury. Reach the glowing lift. Hold your light.</p>
+        <div class="goal">◎ Reach the lift</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== FEATURES ===== -->
+<section id="features">
+  <div class="wrap">
+    <div class="sec-kicker reveal">Under the hood</div>
+    <h2 class="sec reveal">Engineered fear</h2>
+    <div class="rule reveal"></div>
+    <div class="feat-grid">
+      <div class="feat reveal"><span class="ico">👁️</span><h3>LIVING MADNESS</h3><p>Darkness, sprinting on empty stamina and the monster's touch feed insanity 0–100. Tunnel vision, shaking hands, whispers behind you.</p></div>
+      <div class="feat reveal"><span class="ico">🔦</span><h3>PHYSICAL FLASHLIGHT</h3><p>Lagging sway, dying-battery flicker, brightness as the only charge meter. Its cone is the only thing the Fade fears.</p></div>
+      <div class="feat reveal"><span class="ico">👹</span><h3>STALKER AI</h3><p>Patrol / Chase / Retreat with line-of-sight checks. Touch boils madness into a full-screen screamer.</p></div>
+      <div class="feat reveal"><span class="ico">🎞️</span><h3>WGSL POST-FX</h3><p>Custom render-graph shader: trembling film grain and a vignette that thickens with your madness.</p></div>
+      <div class="feat reveal"><span class="ico">🔊</span><h3>SPATIAL AUDIO</h3><p>Footsteps and whispers positioned in 3D space — <i>behind</i> you. Headphones strongly recommended.</p></div>
+      <div class="feat reveal"><span class="ico">🧩</span><h3>PROCEDURAL EVERYTHING</h3><p>Seeded mazes, generated textures, per-act decay. Save/load restores the exact same world.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== GALLERY ===== -->
+<section class="gallery-sec" id="gallery">
+  <div class="wrap">
+    <div class="sec-kicker reveal">Recovered footage</div>
+    <h2 class="sec reveal">Gallery</h2>
+    <div class="rule reveal"></div>
+    <div class="gal-grid">
+      <div class="frame reveal"><img src="assets/site/act2.jpg" alt="Act 2 — blood in the concrete" loading="lazy"></div>
+      <div class="frame reveal"><img src="assets/site/monster.jpg" alt="The Fade lunges" loading="lazy"></div>
+      <div class="frame reveal"><img src="assets/site/lift.jpg" alt="Act 3 — the lift" loading="lazy"></div>
+      <div class="frame reveal"><img src="preview.png" alt="Key art" loading="lazy"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== CONTROLS + TIPS ===== -->
+<section>
+  <div class="wrap cols">
+    <div class="reveal">
+      <div class="sec-kicker" style="text-align:left;">Learn or die</div>
+      <h2 class="sec" style="text-align:left;">Controls</h2>
+      <table class="keys" style="margin-top:22px;">
+        <tr><td>WASD</td><td>Move</td></tr>
+        <tr><td>Mouse</td><td>Look</td></tr>
+        <tr><td>Shift</td><td>Sprint (drains stamina)</td></tr>
+        <tr><td>F</td><td>Flashlight (drains battery)</td></tr>
+        <tr><td>E</td><td>Use: tapes / lever</td></tr>
+        <tr><td>F5 / F9</td><td>Save / load</td></tr>
+        <tr><td>F11</td><td>Fullscreen</td></tr>
+        <tr><td>R / Esc</td><td>Restart / menu</td></tr>
+      </table>
+    </div>
+    <div class="reveal">
+      <div class="sec-kicker" style="text-align:left;">Field manual</div>
+      <h2 class="sec" style="text-align:left;">Survive</h2>
+      <div style="margin-top:22px;">
+        <div class="tip">🩸 <b>Darkness feeds madness</b> — never let the torch die. Green batteries restore +40.</div>
+        <div class="tip">🏃 <b>Empty-stamina sprint</b> is fast but +25 insanity/s. Rest in the light.</div>
+        <div class="tip">🔦 <b>Hold light on the shadow</b> — it cannot stand it, but it learns to wait.</div>
+        <div class="tip">🧸 <b>All 5 keepsakes</b> unlock the good ending. Check every dead end.</div>
+        <div class="tip">⏱️ <b>Act 3: 180 seconds.</b> Run. Do not stop. Do not look back.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== DOWNLOAD ===== -->
+<section class="dl" id="download">
+  <div class="wrap reveal">
+    <div class="sec-kicker">The blast door is open</div>
+    <h2 class="sec">Ready to descend?</h2>
+    <div class="rule"></div>
+    <p>Free forever. Built with Bevy 0.16 and Rust — every texture generated in code, every shadow earned. Bring headphones. Bring courage. Leave guilt at the door. <i>It won't help.</i></p>
+    <div class="cta">
+      <a class="btn btn-red" href="https://github.com/daniil-ship/igragovnachekychka67" target="_blank" rel="noopener">GET THE GAME</a>
+    </div>
+    <div class="sys">Windows · Linux &nbsp;—&nbsp; Keyboard + Mouse &nbsp;—&nbsp; Headphones recommended</div>
+  </div>
+</section>
+
+<footer>
+  <div>ECHO OF FORGOTTEN WALLS — a Bevy 0.16 horror · <a href="https://github.com/daniil-ship/igragovnachekychka67" target="_blank" rel="noopener">GitHub</a></div>
+  <div class="lore">The lift is waiting. Misha is waiting. Don't run this time.</div>
+</footer>
+
+<div id="lightbox"><img src="" alt="gallery image"></div>
+
+<script>
+// nav shade on scroll
+const nav = document.getElementById('nav');
+addEventListener('scroll', () => nav.classList.toggle('scrolled', scrollY > 40), {passive:true});
+
+// reveal on scroll
+const io = new IntersectionObserver(es => es.forEach(e => {
+  if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); }
+}), {threshold: .12});
+document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+// flashlight follows the cursor in the hero
+const hero = document.querySelector('.hero'), torch = document.getElementById('torch');
+hero.addEventListener('pointermove', e => {
+  const r = hero.getBoundingClientRect();
+  torch.style.background =
+    `radial-gradient(circle 260px at ${e.clientX - r.left}px ${e.clientY - r.top}px, rgba(255,244,220,.14), transparent 70%)`;
+});
+
+// gallery lightbox
+const box = document.getElementById('lightbox'), boxImg = box.querySelector('img');
+document.querySelectorAll('.gal-grid .frame img').forEach(img => {
+  img.addEventListener('click', () => { boxImg.src = img.src; box.classList.add('open'); });
+});
+box.addEventListener('click', () => box.classList.remove('open'));
+addEventListener('keydown', e => { if (e.key === 'Escape') box.classList.remove('open'); });
+</script>
+
+</body>
+</html>
